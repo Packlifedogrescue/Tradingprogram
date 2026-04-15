@@ -16,5 +16,10 @@
     "react": "latest",
     "react-dom": "latest",
     "stripe": "latest"
+  },
+  "devDependencies": {
+    "tailwindcss": "^4.1.4",
+    "@tailwindcss/postcss": "^4.1.4",
+    "postcss": "^8.4.49"
   }
 }
