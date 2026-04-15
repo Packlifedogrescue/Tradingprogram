@@ -1,16 +1,27 @@
-@import "tailwindcss";
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
 
+/* Premium dark base */
 :root {
   color-scheme: dark;
 }
 
 html, body {
-  margin: 0;
-  padding: 0;
-  background: #05070b;
-  color: white;
+  background-color: #0a0a0a;
+  color: #ffffff;
 }
 
+/* Smooth UI feel */
 * {
-  box-sizing: border-box;
+  border-color: rgba(255,255,255,0.1);
+}
+
+/* Premium scroll */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d4af37;
+  border-radius: 10px;
 }
