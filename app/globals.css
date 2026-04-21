@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  color-scheme: dark;
+}
+
+html, body {
+  background: #050505;
+}
+
+body {
+  min-height: 100vh;
+}
+
+summary::-webkit-details-marker {
+  display: none;
+}
