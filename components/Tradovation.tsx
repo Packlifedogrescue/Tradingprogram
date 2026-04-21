@@ -1,7 +1,7 @@
 "use client";
 
 import { motion } from "framer-motion";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 type Candle = {
   o: number;
@@ -26,15 +26,15 @@ type SymbolProfile = {
   decimals: number;
 };
 
-const SYMBOL_PROFILES: Record<string, SymbolProfile> = {
-  NQ: { base: 26743.5, vol: 22, drift: 0.18, spread: 0.25, pct: "+0.41%", venue: "CME", decimals: 2 },
+const SYMBOLS: Record<string, SymbolProfile> = {
+  NQ: { base: 26743.5, vol: 20, drift: 0.18, spread: 0.25, pct: "+0.41%", venue: "CME", decimals: 2 },
   ES: { base: 5432.25, vol: 10, drift: 0.12, spread: 0.25, pct: "+0.26%", venue: "CME", decimals: 2 },
-  YM: { base: 40185, vol: 40, drift: 0.14, spread: 1, pct: "+0.19%", venue: "CBOT", decimals: 0 },
-  RTY: { base: 2218.8, vol: 8, drift: 0.11, spread: 0.1, pct: "+0.33%", venue: "CME", decimals: 1 },
+  YM: { base: 40185, vol: 36, drift: 0.14, spread: 1, pct: "+0.19%", venue: "CBOT", decimals: 0 },
+  RTY: { base: 2218.8, vol: 8, drift: 0.1, spread: 0.1, pct: "+0.33%", venue: "CME", decimals: 1 },
 
   MNQ: { base: 26743.5, vol: 18, drift: 0.16, spread: 0.25, pct: "+0.39%", venue: "CME", decimals: 2 },
   MES: { base: 5432.25, vol: 8, drift: 0.1, spread: 0.25, pct: "+0.24%", venue: "CME", decimals: 2 },
-  MYM: { base: 40185, vol: 34, drift: 0.12, spread: 1, pct: "+0.17%", venue: "CBOT", decimals: 0 },
+  MYM: { base: 40185, vol: 30, drift: 0.12, spread: 1, pct: "+0.17%", venue: "CBOT", decimals: 0 },
   M2K: { base: 2218.8, vol: 7, drift: 0.1, spread: 0.1, pct: "+0.30%", venue: "CME", decimals: 1 },
 
   CL: { base: 78.42, vol: 1.6, drift: 0.03, spread: 0.02, pct: "+1.10%", venue: "NYMEX", decimals: 2 },
@@ -50,81 +50,39 @@ const SYMBOL_PROFILES: Record<string, SymbolProfile> = {
   "6J": { base: 0.00658, vol: 0.00004, drift: 0.000003, spread: 0.000001, pct: "+0.27%", venue: "CME", decimals: 5 },
   "6B": { base: 1.2764, vol: 0.004, drift: 0.0003, spread: 0.0001, pct: "+0.31%", venue: "CME", decimals: 4 },
 
-  BTC: { base: 68420, vol: 240, drift: 2.4, spread: 1, pct: "+0.82%", venue: "CRYPTO", decimals: 2 },
+  BTC: { base: 68420, vol: 220, drift: 2.4, spread: 1, pct: "+0.82%", venue: "CRYPTO", decimals: 2 },
 };
 
-const WATCHLIST_GROUPS = [
-  {
-    group: "Index Futures",
-    items: ["NQ", "ES", "YM", "RTY"],
-  },
-  {
-    group: "Micro Index",
-    items: ["MNQ", "MES", "MYM", "M2K"],
-  },
-  {
-    group: "Energy & Metals",
-    items: ["CL", "MCL", "GC", "MGC", "SI", "NG"],
-  },
-  {
-    group: "Rates & FX",
-    items: ["ZB", "ZN", "6E", "6J", "6B"],
-  },
+const WATCHLIST = [
+  { group: "Index Futures", items: ["NQ", "ES", "YM", "RTY"] },
+  { group: "Micro Index", items: ["MNQ", "MES", "MYM", "M2K"] },
+  { group: "Energy & Metals", items: ["CL", "MCL", "GC", "MGC", "SI", "NG"] },
+  { group: "Rates & FX", items: ["ZB", "ZN", "6E", "6J", "6B"] },
 ];
 
-const TIMEFRAME_GROUPING: Record<string, number> = {
-  "1m": 1,
-  "2m": 1,
-  "3m": 1,
-  "5m": 1,
-  "15m": 2,
-  "30m": 3,
-  "1h": 4,
-  "4h": 6,
-  "1d": 8,
-  "1w": 8,
-  "1mo": 8,
-};
-
-function formatPrice(value: number, decimals: number): string {
+function formatPrice(value: number, decimals: number) {
   return value.toLocaleString(undefined, {
     minimumFractionDigits: decimals,
     maximumFractionDigits: decimals,
   });
 }
 
-function makeBaseSeries(profile: SymbolProfile): Candle[] {
+function makeSeries(profile: SymbolProfile): Candle[] {
   const labels = [
-    "09:35",
-    "09:40",
-    "09:45",
-    "09:50",
-    "09:55",
-    "10:00",
-    "10:05",
-    "10:10",
-    "10:15",
-    "10:20",
-    "10:25",
-    "10:30",
-    "10:35",
-    "10:40",
-    "10:45",
-    "10:50",
-    "10:55",
-    "11:00",
-    "11:05",
-    "11:10",
+    "09:35", "09:40", "09:45", "09:50", "09:55",
+    "10:00", "10:05", "10:10", "10:15", "10:20",
+    "10:25", "10:30", "10:35", "10:40", "10:45",
+    "10:50", "10:55", "11:00", "11:05", "11:10",
   ];
 
-  let last = profile.base - profile.vol * 0.9;
+  let last = profile.base - profile.vol * 0.8;
 
   return labels.map((t, i) => {
-    const wave = Math.sin(i * 0.65) * profile.vol * 0.45;
-    const drift = profile.drift * i;
+    const wave = Math.sin(i * 0.7) * profile.vol * 0.5;
+    const trend = profile.drift * i;
     const o = last;
-    const c = o + wave * 0.22 + drift * 0.08 + (i % 2 === 0 ? profile.vol * 0.09 : -profile.vol * 0.07);
-    const h = Math.max(o, c) + profile.vol * (0.12 + (i % 3) * 0.03);
+    const c = o + wave * 0.2 + trend * 0.08 + (i % 2 === 0 ? profile.vol * 0.08 : -profile.vol * 0.06);
+    const h = Math.max(o, c) + profile.vol * (0.12 + (i % 3) * 0.02);
     const l = Math.min(o, c) - profile.vol * (0.11 + (i % 4) * 0.02);
     last = c;
 
@@ -138,7 +96,7 @@ function makeBaseSeries(profile: SymbolProfile): Candle[] {
   });
 }
 
-function aggregateCandles(data: Candle[], group: number): Candle[] {
+function aggregateCandles(data: Candle[], group: number) {
   if (group <= 1) return data;
 
   const out: Candle[] = [];
@@ -180,37 +138,46 @@ export default function Tradovation() {
   const [executionFlash, setExecutionFlash] = useState<string | null>(null);
   const [tradeLog, setTradeLog] = useState<Array<{ side: "BUY" | "SELL"; symbol: string; price: string; time: string }>>([]);
 
-  const profile = SYMBOL_PROFILES[symbol] ?? SYMBOL_PROFILES.NQ;
+  const profile = SYMBOLS[symbol] ?? SYMBOLS.NQ;
 
   const baseData = useMemo(() => {
     const out: Record<string, Candle[]> = {};
-    Object.entries(SYMBOL_PROFILES).forEach(([key, p]) => {
-      out[key] = makeBaseSeries(p);
+    Object.entries(SYMBOLS).forEach(([key, p]) => {
+      out[key] = makeSeries(p);
     });
     return out;
   }, []);
 
   const baseCandles = useMemo(() => {
     const raw = baseData[symbol] ?? baseData.NQ;
-    return aggregateCandles(raw, TIMEFRAME_GROUPING[timeframe] ?? 1);
+    const groupingMap: Record<string, number> = {
+      "1m": 1,
+      "2m": 1,
+      "3m": 1,
+      "5m": 1,
+      "15m": 2,
+      "30m": 3,
+      "1h": 4,
+      "4h": 6,
+      "1d": 8,
+      "1w": 8,
+      "1mo": 8,
+    };
+    return aggregateCandles(raw, groupingMap[timeframe] ?? 1);
   }, [baseData, symbol, timeframe]);
 
-  const [liveCandles, setLiveCandles] = useState<Candle[]>(baseCandles);
-  const liveCandlesRef = useRef<Candle[]>(baseCandles);
+  const [candles, setCandles] = useState<Candle[]>(baseCandles);
 
   useEffect(() => {
-    setLiveCandles(baseCandles);
-    liveCandlesRef.current = baseCandles;
+    setCandles(baseCandles);
   }, [baseCandles]);
 
   useEffect(() => {
     const id = setInterval(() => {
-      setLiveCandles((prev) => {
+      setCandles((prev) => {
         if (!prev.length) return prev;
-
         const next = [...prev];
-        const lastIndex = next.length - 1;
-        const current = { ...next[lastIndex] };
+        const current = { ...next[next.length - 1] };
 
         const step = (Math.random() - 0.5) * profile.vol * 0.06 + profile.drift * 0.01;
         const nextClose = Number((current.c + step).toFixed(6));
@@ -218,24 +185,21 @@ export default function Tradovation() {
         current.c = nextClose;
         current.h = Number(Math.max(current.h, nextClose).toFixed(6));
         current.l = Number(Math.min(current.l, nextClose).toFixed(6));
-        next[lastIndex] = current;
+        next[next.length - 1] = current;
 
-        if (Math.random() > 0.72) {
-          const newOpen = current.c;
-          const newClose = Number((newOpen + step * 0.35).toFixed(6));
-
+        if (Math.random() > 0.74) {
+          const open = current.c;
+          const close = Number((open + step * 0.35).toFixed(6));
           next.push({
-            o: Number(newOpen.toFixed(6)),
-            c: newClose,
-            h: Number((Math.max(newOpen, newClose) + profile.vol * 0.04).toFixed(6)),
-            l: Number((Math.min(newOpen, newClose) - profile.vol * 0.04).toFixed(6)),
+            o: Number(open.toFixed(6)),
+            c: close,
+            h: Number((Math.max(open, close) + profile.vol * 0.04).toFixed(6)),
+            l: Number((Math.min(open, close) - profile.vol * 0.04).toFixed(6)),
             t: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           });
-
           if (next.length > 30) next.shift();
         }
 
-        liveCandlesRef.current = next;
         return next;
       });
     }, 900);
@@ -244,7 +208,7 @@ export default function Tradovation() {
   }, [profile.vol, profile.drift]);
 
   useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
+    const onKey = (e: KeyboardEvent) => {
       const key = e.key.toLowerCase();
 
       if (["t", "h", "r", "escape"].includes(key)) e.preventDefault();
@@ -270,8 +234,8 @@ export default function Tradovation() {
       }
     };
 
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
   }, []);
 
   useEffect(() => {
@@ -286,7 +250,6 @@ export default function Tradovation() {
     return () => clearTimeout(id);
   }, [executionFlash]);
 
-  const candles = liveCandles;
   const minL = Math.min(...candles.map((c) => c.l));
   const maxH = Math.max(...candles.map((c) => c.h));
   const range = Math.max(maxH - minL, 0.0001);
@@ -294,23 +257,18 @@ export default function Tradovation() {
   const toPct = (v: number) => ((v - minL) / range) * 76 + 8;
   const fromScreenPct = (yPct: number) => maxH - ((yPct - 8) / 76) * range;
 
-  const active = hoveredCandle !== null ? candles[hoveredCandle] : null;
+  const active = hoveredCandle !== null ? candles[hoveredCandle] ?? null : null;
   const lastClose = candles[candles.length - 1]?.c ?? profile.base;
   const simulatedPrice = Number(lastClose.toFixed(6));
   const simulatedPricePct = toPct(simulatedPrice);
 
   const entryPrice = fromScreenPct(orderLevels.entry);
-  const targetPrice = fromScreenPct(orderLevels.target);
   const stopPrice = fromScreenPct(orderLevels.stop);
-  const unrealizedPnL = ((simulatedPrice - entryPrice) * 3).toFixed(2);
-  const rMultiple = ((targetPrice - entryPrice) / Math.max(Math.abs(entryPrice - stopPrice), 0.0001)).toFixed(2);
+  const targetPrice = fromScreenPct(orderLevels.target);
 
   const hoveredPrice = active ? active.c : simulatedPrice;
   const hoveredPricePct = active ? toPct(active.c) : simulatedPricePct;
-  const hoveredTime = active?.t ?? candles[candles.length - 1]?.t ?? "10:30";
-
-  const bid = simulatedPrice - profile.spread;
-  const ask = simulatedPrice + profile.spread;
+  const hoveredTime = active ? active.t : candles[candles.length - 1]?.t ?? "10:30";
 
   const priceScale = Array.from({ length: 9 }, (_, i) =>
     Number((maxH - (range / 8) * i).toFixed(6))
@@ -323,6 +281,11 @@ export default function Tradovation() {
     candles[Math.floor(candles.length * 0.75)]?.t,
     candles[candles.length - 1]?.t,
   ].filter(Boolean) as string[];
+
+  const bid = simulatedPrice - profile.spread;
+  const ask = simulatedPrice + profile.spread;
+  const unrealizedPnL = ((simulatedPrice - entryPrice) * 3).toFixed(2);
+  const rMultiple = ((targetPrice - entryPrice) / Math.max(Math.abs(entryPrice - stopPrice), 0.0001)).toFixed(2);
 
   const ema20Points = useMemo(() => {
     const k = 2 / 21;
@@ -381,13 +344,6 @@ export default function Tradovation() {
     return minDist < 6 && closest ? closest : p;
   };
 
-  const leftToolbar: Array<[typeof tool, string]> = [
-    ["crosshair", "＋"],
-    ["trend", "／"],
-    ["hline", "—"],
-    ["range", "▭"],
-  ];
-
   const handleExecution = (side: "BUY" | "SELL") => {
     const price = formatPrice(simulatedPrice, profile.decimals);
     setExecutionFlash(`${side} order filled • ${symbol} @ ${price}`);
@@ -396,11 +352,7 @@ export default function Tradovation() {
         side,
         symbol,
         price,
-        time: new Date().toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        }),
+        time: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" }),
       },
       ...prev,
     ].slice(0, 8));
@@ -425,9 +377,7 @@ export default function Tradovation() {
           <div className="border-b border-white/10 px-5 py-4 sm:px-6">
             <div className="flex flex-wrap items-center justify-between gap-4">
               <div>
-                <div className="text-[11px] uppercase tracking-[0.34em] text-amber-300">
-                  Tradovation chart
-                </div>
+                <div className="text-[11px] uppercase tracking-[0.34em] text-amber-300">Tradovation chart</div>
                 <div className="mt-1 text-2xl font-semibold text-white">Execution workspace</div>
               </div>
 
@@ -545,7 +495,6 @@ export default function Tradovation() {
                   >
                     {sessionMode}
                   </button>
-
                   <button
                     onClick={() => setShowLevels((v) => !v)}
                     className="rounded-full border border-white/10 bg-white/[0.03] px-3 py-1.5 text-white/75"
@@ -569,18 +518,20 @@ export default function Tradovation() {
                       <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px]">
                         Simulated
                       </span>
-                      <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[10px]">
-                        Vol active
-                      </span>
                     </div>
                   </div>
 
                   <div className="hidden items-center gap-1 rounded-full border border-white/10 bg-black/40 p-1 sm:flex">
-                    {leftToolbar.map(([key, label]) => (
+                    {[
+                      ["crosshair", "Crosshair"],
+                      ["trend", "Trend"],
+                      ["hline", "H-Line"],
+                      ["range", "Range"],
+                    ].map(([key, label]) => (
                       <button
                         key={key}
                         onClick={() => {
-                          setTool(key);
+                          setTool(key as typeof tool);
                           setDraftPoint(null);
                         }}
                         className={`rounded-full px-3 py-1.5 text-[11px] ${
@@ -595,496 +546,277 @@ export default function Tradovation() {
                   </div>
                 </div>
 
-                <div className="relative flex gap-3">
-                  <div className="hidden w-12 shrink-0 flex-col items-center gap-2 rounded-[1.2rem] border border-white/10 bg-black/30 p-2 sm:flex">
-                    {leftToolbar.map(([key, icon]) => (
-                      <button
-                        key={key}
-                        onClick={() => {
-                          setTool(key);
-                          setDraftPoint(null);
+                <div className="relative h-[31rem] overflow-hidden rounded-[1.2rem] border border-white/8 bg-black select-none">
+                  <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.05)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.05)_1px,transparent_1px)] bg-[size:48px_48px]" />
+
+                  {showLevels && (
+                    <>
+                      <div className="absolute inset-x-0 top-[28%] border-t border-amber-400/20" />
+                      <div className="absolute inset-x-0 top-[58%] border-t border-white/10" />
+                    </>
+                  )}
+
+                  {orderMode && (
+                    <>
+                      <div
+                        className="absolute inset-x-0 z-[1]"
+                        style={{
+                          bottom: `${Math.min(orderLevels.entry, orderLevels.target)}%`,
+                          height: `${Math.abs(orderLevels.target - orderLevels.entry)}%`,
+                          background: "linear-gradient(to top, rgba(74,222,128,0.08), rgba(74,222,128,0.16))",
                         }}
-                        className={`flex h-9 w-9 items-center justify-center rounded-xl border text-sm transition ${
-                          tool === key
-                            ? "border-amber-400/25 bg-amber-400/10 text-amber-300"
-                            : "border-white/8 bg-white/[0.02] text-white/65 hover:text-white"
-                        }`}
+                      />
+                      <div
+                        className="absolute inset-x-0 z-[1]"
+                        style={{
+                          bottom: `${Math.min(orderLevels.entry, orderLevels.stop)}%`,
+                          height: `${Math.abs(orderLevels.entry - orderLevels.stop)}%`,
+                          background: "linear-gradient(to top, rgba(248,113,113,0.08), rgba(248,113,113,0.16))",
+                        }}
+                      />
+                    </>
+                  )}
+
+                  {active && hoveredCandle !== null && (
+                    <>
+                      <div
+                        className="absolute top-0 bottom-0 z-10 w-px bg-amber-300/40"
+                        style={{ left: `calc(${((hoveredCandle + 0.5) / candles.length) * 100}% )` }}
+                      />
+                      <div
+                        className="absolute left-0 right-0 z-10 h-px bg-amber-300/25"
+                        style={{ bottom: `${hoveredPricePct}%` }}
+                      />
+                    </>
+                  )}
+
+                  <div
+                    className="absolute left-0 right-0 z-10 h-px border-t border-dashed border-amber-300/35"
+                    style={{ bottom: `${simulatedPricePct}%` }}
+                  />
+
+                  <div
+                    className="absolute right-3 z-20 rounded-md border border-amber-400/20 bg-black/90 px-2 py-1 text-[11px] font-medium text-amber-300"
+                    style={{ bottom: `${simulatedPricePct}%`, transform: "translateY(50%)" }}
+                  >
+                    Live {formatPrice(simulatedPrice, profile.decimals)}
+                  </div>
+
+                  {active && hoveredCandle !== null && (
+                    <>
+                      <div
+                        className="absolute right-16 z-20 rounded-md border border-white/10 bg-black/85 px-2 py-1 text-[10px] text-white/70"
+                        style={{ bottom: `${hoveredPricePct}%`, transform: "translateY(50%)" }}
                       >
-                        {icon}
-                      </button>
+                        {formatPrice(hoveredPrice, profile.decimals)}
+                      </div>
+                      <div
+                        className="absolute bottom-2 z-20 rounded-md border border-white/10 bg-black/85 px-2 py-1 text-[10px] text-white/70"
+                        style={{ left: `calc(${((hoveredCandle + 0.5) / candles.length) * 100}% - 22px)` }}
+                      >
+                        {hoveredTime}
+                      </div>
+                    </>
+                  )}
+
+                  <svg className="absolute inset-0 z-10 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
+                    {enabledIndicators.includes("EMA 20") && candles.length > 1 && (
+                      <polyline
+                        fill="none"
+                        stroke="rgba(96,165,250,0.95)"
+                        strokeWidth="0.45"
+                        points={ema20Points.map((v, i) => `${((i + 0.5) / candles.length) * 100},${100 - toPct(v)}`).join(" ")}
+                      />
+                    )}
+
+                    {enabledIndicators.includes("VWAP") && candles.length > 1 && (
+                      <polyline
+                        fill="none"
+                        stroke="rgba(245,158,11,0.95)"
+                        strokeWidth="0.42"
+                        strokeDasharray="1.2 1.1"
+                        points={vwapPoints.map((v, i) => `${((i + 0.5) / candles.length) * 100},${100 - toPct(v)}`).join(" ")}
+                      />
+                    )}
+
+                    {drawings.map((d, i) => {
+                      const isActive = i === selectedDrawing;
+
+                      if (d.type === "hline") {
+                        return (
+                          <line
+                            key={i}
+                            x1="0"
+                            y1={d.y}
+                            x2="100"
+                            y2={d.y}
+                            stroke={isActive ? "#fcd34d" : "rgba(245,158,11,0.8)"}
+                            strokeWidth="0.6"
+                            strokeDasharray="2 2"
+                          />
+                        );
+                      }
+
+                      if (d.type === "trend") {
+                        return (
+                          <g key={i}>
+                            <line
+                              x1={d.start.x}
+                              y1={d.start.y}
+                              x2={d.end.x}
+                              y2={d.end.y}
+                              stroke={isActive ? "#fcd34d" : "rgba(245,158,11,0.9)"}
+                              strokeWidth="0.5"
+                            />
+                            <circle cx={d.start.x} cy={d.start.y} r="1.2" fill="rgba(245,158,11,0.9)" />
+                            <circle cx={d.end.x} cy={d.end.y} r="1.2" fill="rgba(245,158,11,0.9)" />
+                          </g>
+                        );
+                      }
+
+                      if (d.type === "range") {
+                        const x = Math.min(d.start.x, d.end.x);
+                        const y = Math.min(d.start.y, d.end.y);
+                        const w = Math.abs(d.end.x - d.start.x);
+                        const h = Math.abs(d.end.y - d.start.y);
+                        return (
+                          <rect
+                            key={i}
+                            x={x}
+                            y={y}
+                            width={w}
+                            height={h}
+                            fill="rgba(245,158,11,0.08)"
+                            stroke="rgba(245,158,11,0.8)"
+                            strokeWidth="0.4"
+                          />
+                        );
+                      }
+
+                      return null;
+                    })}
+
+                    {draftPoint && tool !== "hline" && (
+                      <circle cx={draftPoint.x} cy={draftPoint.y} r="1" fill="rgba(245,158,11,0.9)" />
+                    )}
+                  </svg>
+
+                  {(["entry", "stop", "target"] as const).map((levelKey) => {
+                    if (!orderMode) return null;
+
+                    const labelMap = {
+                      entry: { label: "Entry", color: "#fcd34d" },
+                      stop: { label: "Stop", color: "#f87171" },
+                      target: { label: "Target", color: "#4ade80" },
+                    };
+
+                    const level = labelMap[levelKey];
+
+                    return (
+                      <div key={levelKey} className="absolute inset-x-0 z-20" style={{ bottom: `${orderLevels[levelKey]}%` }}>
+                        <div className="relative h-px" style={{ backgroundColor: `${level.color}55` }} />
+                        <div
+                          className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md border border-white/10 bg-black/90 px-2 py-1 text-[11px] font-medium"
+                          style={{ color: level.color }}
+                        >
+                          {level.label} {formatPrice(fromScreenPct(orderLevels[levelKey]), profile.decimals)}
+                        </div>
+                      </div>
+                    );
+                  })}
+
+                  <div className="absolute inset-0 flex items-end gap-[3px] px-4 pb-10 pt-8 pr-16">
+                    {candles.map((bar, i) => {
+                      const bullish = bar.c >= bar.o;
+                      const bodyBottom = Math.min(toPct(bar.o), toPct(bar.c));
+                      const bodyHeight = Math.max(Math.abs(toPct(bar.c) - toPct(bar.o)), 2.5);
+
+                      return (
+                        <motion.div
+                          key={`${bar.t}-${i}`}
+                          initial={{ opacity: 0, y: 10 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          transition={{ duration: 0.2 }}
+                          className="relative h-full flex-1"
+                          onMouseEnter={() => setHoveredCandle(i)}
+                          onMouseLeave={() => setHoveredCandle(null)}
+                        >
+                          <div
+                            className={`absolute left-1/2 w-px -translate-x-1/2 ${bullish ? "bg-emerald-300/90" : "bg-red-300/80"}`}
+                            style={{ bottom: `${toPct(bar.l)}%`, height: `${toPct(bar.h) - toPct(bar.l)}%` }}
+                          />
+                          <motion.div
+                            className={`absolute left-1/2 -translate-x-1/2 rounded-[2px] ${
+                              bullish
+                                ? "bg-gradient-to-t from-emerald-500 to-emerald-300"
+                                : "bg-gradient-to-t from-red-500 to-red-300"
+                            } w-[28%]`}
+                            animate={{ bottom: `${bodyBottom}%`, height: `${bodyHeight}%` }}
+                            transition={{ duration: 0.35, ease: "easeOut" }}
+                          />
+                          {enabledIndicators.includes("Volume") && (
+                            <motion.div
+                              className={`absolute left-1/2 -translate-x-1/2 ${bullish ? "bg-emerald-400/35" : "bg-red-400/30"} w-[38%] rounded-t-[2px]`}
+                              animate={{ height: `${10 + (i % 5) * 2.5}%` }}
+                              transition={{ duration: 0.35, ease: "easeOut" }}
+                              style={{ bottom: "0%" }}
+                            />
+                          )}
+                        </motion.div>
+                      );
+                    })}
+                  </div>
+
+                  <div className="absolute left-4 top-4 rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-[11px] text-white/60">
+                    {profile.venue} • {sessionMode} • {profile.pct}
+                  </div>
+
+                  <div className="absolute left-4 top-14 flex flex-wrap gap-2 text-[10px]">
+                    {enabledIndicators.includes("EMA 20") && (
+                      <span className="rounded-full border border-blue-400/20 bg-blue-400/10 px-2 py-1 text-blue-300">EMA 20</span>
+                    )}
+                    {enabledIndicators.includes("VWAP") && (
+                      <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2 py-1 text-amber-300">VWAP</span>
+                    )}
+                    {enabledIndicators.includes("Volume") && (
+                      <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-emerald-300">VOL</span>
+                    )}
+                  </div>
+
+                  <div className="absolute right-4 top-4 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-[11px] text-emerald-400">
+                    {(simulatedPrice - entryPrice) * 3 >= 0 ? "+" : ""}
+                    {unrealizedPnL} PnL
+                  </div>
+
+                  {hotkeyToast && (
+                    <div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-amber-400/20 bg-black/85 px-3 py-1.5 text-[11px] text-amber-300">
+                      {hotkeyToast}
+                    </div>
+                  )}
+
+                  {executionFlash && (
+                    <div className="absolute left-1/2 top-14 z-30 -translate-x-1/2 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-[11px] text-emerald-300">
+                      {executionFlash}
+                    </div>
+                  )}
+
+                  <div className="absolute inset-y-0 right-0 z-20 w-16 border-l border-white/8 bg-black/55">
+                    {priceScale.map((price, idx) => (
+                      <div
+                        key={`${price}-${idx}`}
+                        className="absolute right-2 text-[10px] text-white/65"
+                        style={{ top: `${8 + idx * 10.5}%`, transform: "translateY(-50%)" }}
+                      >
+                        {formatPrice(price, profile.decimals)}
+                      </div>
                     ))}
                   </div>
 
-                  <div
-                    className="relative h-[31rem] flex-1 overflow-hidden rounded-[1.2rem] border border-white/8 bg-black select-none"
-                    onContextMenu={(e) => {
-                      e.preventDefault();
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      const p = snapToCandle(normalizePoint(e.clientX, e.clientY, rect));
-
-                      let hitIndex: number | null = null;
-
-                      drawings.forEach((d, i) => {
-                        if (d.type === "hline" && Math.abs(d.y - p.y) < 2) hitIndex = i;
-                        if (d.type === "trend") {
-                          const midX = (d.start.x + d.end.x) / 2;
-                          const midY = (d.start.y + d.end.y) / 2;
-                          if (Math.hypot(midX - p.x, midY - p.y) < 4) hitIndex = i;
-                        }
-                        if (d.type === "range") {
-                          const x1 = Math.min(d.start.x, d.end.x);
-                          const x2 = Math.max(d.start.x, d.end.x);
-                          const y1 = Math.min(d.start.y, d.end.y);
-                          const y2 = Math.max(d.start.y, d.end.y);
-                          if (p.x >= x1 && p.x <= x2 && p.y >= y1 && p.y <= y2) hitIndex = i;
-                        }
-                      });
-
-                      if (hitIndex !== null) {
-                        setDrawings((ds) => ds.filter((_, i) => i !== hitIndex));
-                        setSelectedDrawing(null);
-                        setDragMode(null);
-                      }
-                    }}
-                    onClick={(e) => {
-                      if (tool === "crosshair") return;
-
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      const p = snapToCandle(normalizePoint(e.clientX, e.clientY, rect));
-
-                      if (tool === "hline") {
-                        setDrawings((d) => [...d, { type: "hline", y: p.y }]);
-                        return;
-                      }
-
-                      if (!draftPoint) {
-                        setDraftPoint(p);
-                        return;
-                      }
-
-                      if (tool === "trend") {
-                        setDrawings((d) => [...d, { type: "trend", start: draftPoint, end: p }]);
-                      }
-                      if (tool === "range") {
-                        setDrawings((d) => [...d, { type: "range", start: draftPoint, end: p }]);
-                      }
-
-                      setDraftPoint(null);
-                    }}
-                    onMouseDown={(e) => {
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      const p = snapToCandle(normalizePoint(e.clientX, e.clientY, rect));
-
-                      if (orderMode) {
-                        (["entry", "stop", "target"] as const).forEach((key) => {
-                          if (Math.abs(orderLevels[key] - p.y) < 2) {
-                            setSelectedDrawing(key);
-                            setDragMode("order");
-                          }
-                        });
-                      }
-
-                      drawings.forEach((d, i) => {
-                        if (d.type === "hline" && Math.abs(d.y - p.y) < 2) {
-                          setSelectedDrawing(i);
-                          setDragMode("hline");
-                        }
-
-                        if (d.type === "trend") {
-                          const nearStart = Math.hypot(d.start.x - p.x, d.start.y - p.y) < 3;
-                          const nearEnd = Math.hypot(d.end.x - p.x, d.end.y - p.y) < 3;
-                          const midX = (d.start.x + d.end.x) / 2;
-                          const midY = (d.start.y + d.end.y) / 2;
-                          const nearMid = Math.hypot(midX - p.x, midY - p.y) < 4;
-
-                          if (nearStart) {
-                            setSelectedDrawing(i);
-                            setDragMode("trend-start");
-                          } else if (nearEnd) {
-                            setSelectedDrawing(i);
-                            setDragMode("trend-end");
-                          } else if (nearMid) {
-                            setSelectedDrawing(i);
-                            setDragMode("trend-move");
-                          }
-                        }
-                      });
-                    }}
-                    onMouseMove={(e) => {
-                      const rect = e.currentTarget.getBoundingClientRect();
-                      const p = snapToCandle(normalizePoint(e.clientX, e.clientY, rect));
-
-                      if (dragMode === "order" && typeof selectedDrawing === "string") {
-                        setOrderLevels((prev) => ({ ...prev, [selectedDrawing]: p.y }));
-                        return;
-                      }
-
-                      if (selectedDrawing === null || typeof selectedDrawing !== "number") return;
-
-                      setDrawings((ds) =>
-                        ds.map((d, i) => {
-                          if (i !== selectedDrawing) return d;
-
-                          if (dragMode === "hline" && d.type === "hline") {
-                            return { ...d, y: p.y };
-                          }
-
-                          if (dragMode === "trend-start" && d.type === "trend") {
-                            return { ...d, start: p };
-                          }
-
-                          if (dragMode === "trend-end" && d.type === "trend") {
-                            return { ...d, end: p };
-                          }
-
-                          if (dragMode === "trend-move" && d.type === "trend") {
-                            const midX = (d.start.x + d.end.x) / 2;
-                            const midY = (d.start.y + d.end.y) / 2;
-                            const dx = p.x - midX;
-                            const dy = p.y - midY;
-                            return {
-                              ...d,
-                              start: {
-                                x: Math.max(0, Math.min(100, d.start.x + dx)),
-                                y: Math.max(0, Math.min(100, d.start.y + dy)),
-                              },
-                              end: {
-                                x: Math.max(0, Math.min(100, d.end.x + dx)),
-                                y: Math.max(0, Math.min(100, d.end.y + dy)),
-                              },
-                            };
-                          }
-
-                          return d;
-                        })
-                      );
-                    }}
-                    onMouseUp={() => {
-                      setSelectedDrawing(null);
-                      setDragMode(null);
-                    }}
-                    onMouseLeave={() => {
-                      setHoveredCandle(null);
-                      setSelectedDrawing(null);
-                      setDragMode(null);
-                    }}
-                  >
-                    <div className="absolute inset-0 bg-[linear-gradient(to_right,rgba(255,255,255,0.05)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.05)_1px,transparent_1px)] bg-[size:48px_48px]" />
-
-                    {showLevels && (
-                      <>
-                        <div className="absolute inset-x-0 top-[28%] border-t border-amber-400/20" />
-                        <div className="absolute inset-x-0 top-[58%] border-t border-white/10" />
-                      </>
-                    )}
-
-                    {orderMode && (
-                      <>
-                        <div
-                          className="absolute inset-x-0 z-[1]"
-                          style={{
-                            bottom: `${Math.min(orderLevels.entry, orderLevels.target)}%`,
-                            height: `${Math.abs(orderLevels.target - orderLevels.entry)}%`,
-                            background:
-                              "linear-gradient(to top, rgba(74,222,128,0.08), rgba(74,222,128,0.16))",
-                          }}
-                        />
-                        <div
-                          className="absolute inset-x-0 z-[1]"
-                          style={{
-                            bottom: `${Math.min(orderLevels.entry, orderLevels.stop)}%`,
-                            height: `${Math.abs(orderLevels.entry - orderLevels.stop)}%`,
-                            background:
-                              "linear-gradient(to top, rgba(248,113,113,0.08), rgba(248,113,113,0.16))",
-                          }}
-                        />
-                      </>
-                    )}
-
-                    {active && hoveredCandle !== null && (
-                      <>
-                        <div
-                          className="absolute top-0 bottom-0 z-10 w-px bg-amber-300/40"
-                          style={{
-                            left: `calc(${((hoveredCandle + 0.5) / candles.length) * 100}% )`,
-                          }}
-                        />
-                        <div
-                          className="absolute left-0 right-0 z-10 h-px bg-amber-300/25"
-                          style={{ bottom: `${hoveredPricePct}%` }}
-                        />
-                      </>
-                    )}
-
-                    <div
-                      className="absolute left-0 right-0 z-10 h-px border-t border-dashed border-amber-300/35"
-                      style={{ bottom: `${simulatedPricePct}%` }}
-                    />
-                    <div
-                      className="absolute right-3 z-20 rounded-md border border-amber-400/20 bg-black/90 px-2 py-1 text-[11px] font-medium text-amber-300 shadow-[0_8px_24px_rgba(245,158,11,0.15)]"
-                      style={{ bottom: `${simulatedPricePct}%`, transform: "translateY(50%)" }}
-                    >
-                      Live {formatPrice(simulatedPrice, profile.decimals)}
-                    </div>
-
-                    {active && hoveredCandle !== null && (
-                      <>
-                        <div
-                          className="absolute right-16 z-20 rounded-md border border-white/10 bg-black/85 px-2 py-1 text-[10px] text-white/70"
-                          style={{ bottom: `${hoveredPricePct}%`, transform: "translateY(50%)" }}
-                        >
-                          {formatPrice(hoveredPrice, profile.decimals)}
-                        </div>
-
-                        <div
-                          className="absolute bottom-2 z-20 rounded-md border border-white/10 bg-black/85 px-2 py-1 text-[10px] text-white/70"
-                          style={{
-                            left: `calc(${((hoveredCandle + 0.5) / candles.length) * 100}% - 22px)`,
-                          }}
-                        >
-                          {hoveredTime}
-                        </div>
-                      </>
-                    )}
-
-                    <svg className="absolute inset-0 z-10 h-full w-full" viewBox="0 0 100 100" preserveAspectRatio="none">
-                      {enabledIndicators.includes("EMA 20") && candles.length > 1 && (
-                        <polyline
-                          fill="none"
-                          stroke="rgba(96,165,250,0.95)"
-                          strokeWidth="0.45"
-                          points={ema20Points
-                            .map((v, i) => `${((i + 0.5) / candles.length) * 100},${100 - toPct(v)}`)
-                            .join(" ")}
-                        />
-                      )}
-
-                      {enabledIndicators.includes("VWAP") && candles.length > 1 && (
-                        <polyline
-                          fill="none"
-                          stroke="rgba(245,158,11,0.95)"
-                          strokeWidth="0.42"
-                          strokeDasharray="1.2 1.1"
-                          points={vwapPoints
-                            .map((v, i) => `${((i + 0.5) / candles.length) * 100},${100 - toPct(v)}`)
-                            .join(" ")}
-                        />
-                      )}
-
-                      {drawings.map((d, i) => {
-                        const isActive = i === selectedDrawing;
-
-                        if (d.type === "hline") {
-                          return (
-                            <line
-                              key={i}
-                              x1="0"
-                              y1={d.y}
-                              x2="100"
-                              y2={d.y}
-                              stroke={isActive ? "#fcd34d" : "rgba(245,158,11,0.8)"}
-                              strokeWidth="0.6"
-                              strokeDasharray="2 2"
-                            />
-                          );
-                        }
-
-                        if (d.type === "trend") {
-                          return (
-                            <g key={i}>
-                              <line
-                                x1={d.start.x}
-                                y1={d.start.y}
-                                x2={d.end.x}
-                                y2={d.end.y}
-                                stroke={isActive ? "#fcd34d" : "rgba(245,158,11,0.9)"}
-                                strokeWidth="0.5"
-                              />
-                              <circle cx={d.start.x} cy={d.start.y} r="1.2" fill="rgba(245,158,11,0.9)" />
-                              <circle cx={d.end.x} cy={d.end.y} r="1.2" fill="rgba(245,158,11,0.9)" />
-                            </g>
-                          );
-                        }
-
-                        if (d.type === "range") {
-                          const x = Math.min(d.start.x, d.end.x);
-                          const y = Math.min(d.start.y, d.end.y);
-                          const w = Math.abs(d.end.x - d.start.x);
-                          const h = Math.abs(d.end.y - d.start.y);
-                          return (
-                            <rect
-                              key={i}
-                              x={x}
-                              y={y}
-                              width={w}
-                              height={h}
-                              fill="rgba(245,158,11,0.08)"
-                              stroke="rgba(245,158,11,0.8)"
-                              strokeWidth="0.4"
-                            />
-                          );
-                        }
-
-                        return null;
-                      })}
-
-                      {draftPoint && tool !== "hline" && (
-                        <circle cx={draftPoint.x} cy={draftPoint.y} r="1" fill="rgba(245,158,11,0.9)" />
-                      )}
-                    </svg>
-
-                    {orderMode &&
-                      [
-                        { key: "entry", label: "Entry", color: "#fcd34d" },
-                        { key: "stop", label: "Stop", color: "#f87171" },
-                        { key: "target", label: "Target", color: "#4ade80" },
-                      ].map((level) => {
-                        const key = level.key as keyof typeof orderLevels;
-                        return (
-                          <div key={level.key} className="absolute inset-x-0 z-20" style={{ bottom: `${orderLevels[key]}%` }}>
-                            <div className="relative h-px" style={{ backgroundColor: `${level.color}55` }} />
-                            <div
-                              className="absolute right-3 top-1/2 -translate-y-1/2 rounded-md border border-white/10 bg-black/90 px-2 py-1 text-[11px] font-medium shadow-[0_8px_24px_rgba(0,0,0,0.3)]"
-                              style={{ color: level.color }}
-                            >
-                              {level.label} {formatPrice(fromScreenPct(orderLevels[key]), profile.decimals)}
-                            </div>
-                            <div
-                              className="absolute left-3 top-1/2 -translate-y-1/2 h-2.5 w-2.5 rounded-full border border-white/30"
-                              style={{
-                                boxShadow: `0 0 0 3px ${level.color}20`,
-                                backgroundColor: level.color,
-                              }}
-                            />
-                          </div>
-                        );
-                      })}
-
-                    <div className="absolute inset-0 flex items-end gap-[3px] px-4 pb-10 pt-8 pr-16">
-                      {candles.map((bar, i) => {
-                        const bullish = bar.c >= bar.o;
-                        const bodyBottom = Math.min(toPct(bar.o), toPct(bar.c));
-                        const bodyHeight = Math.max(Math.abs(toPct(bar.c) - toPct(bar.o)), 2.5);
-
-                        return (
-                          <motion.div
-                            key={`${bar.t}-${i}`}
-                            initial={{ opacity: 0, y: 10 }}
-                            animate={{ opacity: 1, y: 0 }}
-                            transition={{ duration: 0.2 }}
-                            className="relative h-full flex-1"
-                            onMouseEnter={() => setHoveredCandle(i)}
-                            onMouseLeave={() => setHoveredCandle(null)}
-                            style={{ pointerEvents: "all" }}
-                          >
-                            <div
-                              className={`absolute left-1/2 w-px -translate-x-1/2 ${
-                                bullish ? "bg-emerald-300/90" : "bg-red-300/80"
-                              }`}
-                              style={{
-                                bottom: `${toPct(bar.l)}%`,
-                                height: `${toPct(bar.h) - toPct(bar.l)}%`,
-                              }}
-                            />
-                            <motion.div
-                              className={`absolute left-1/2 -translate-x-1/2 rounded-[2px] ${
-                                bullish
-                                  ? "bg-gradient-to-t from-emerald-500 to-emerald-300"
-                                  : "bg-gradient-to-t from-red-500 to-red-300"
-                              } w-[28%]`}
-                              animate={{
-                                bottom: `${bodyBottom}%`,
-                                height: `${bodyHeight}%`,
-                              }}
-                              transition={{ duration: 0.35, ease: "easeOut" }}
-                            />
-                            {enabledIndicators.includes("Volume") && (
-                              <motion.div
-                                className={`absolute left-1/2 -translate-x-1/2 ${
-                                  bullish ? "bg-emerald-400/35" : "bg-red-400/30"
-                                } w-[38%] rounded-t-[2px]`}
-                                animate={{ height: `${10 + (i % 5) * 2.5}%` }}
-                                transition={{ duration: 0.35, ease: "easeOut" }}
-                                style={{ bottom: "0%" }}
-                              />
-                            )}
-                            <div className="absolute inset-0 cursor-crosshair" />
-                          </motion.div>
-                        );
-                      })}
-                    </div>
-
-                    <div className="absolute left-4 top-4 rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-[11px] text-white/60">
-                      {profile.venue} • {sessionMode} • {profile.pct}
-                    </div>
-
-                    <div className="absolute left-4 top-14 flex flex-wrap gap-2 text-[10px]">
-                      {enabledIndicators.includes("EMA 20") && (
-                        <span className="rounded-full border border-blue-400/20 bg-blue-400/10 px-2 py-1 text-blue-300">
-                          EMA 20
-                        </span>
-                      )}
-                      {enabledIndicators.includes("VWAP") && (
-                        <span className="rounded-full border border-amber-400/20 bg-amber-400/10 px-2 py-1 text-amber-300">
-                          VWAP
-                        </span>
-                      )}
-                      {enabledIndicators.includes("Volume") && (
-                        <span className="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-1 text-emerald-300">
-                          VOL
-                        </span>
-                      )}
-                    </div>
-
-                    <div className="absolute right-4 top-4 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-[11px] text-emerald-400">
-                      {(simulatedPrice - entryPrice) * 3 >= 0 ? "+" : ""}
-                      {unrealizedPnL} PnL
-                    </div>
-
-                    <div className="absolute left-4 bottom-12 rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-[11px] text-white/58">
-                      Tool: {tool} • T / H / R / Esc
-                    </div>
-
-                    {hotkeyToast && (
-                      <div className="absolute left-1/2 top-4 z-30 -translate-x-1/2 rounded-full border border-amber-400/20 bg-black/85 px-3 py-1.5 text-[11px] text-amber-300">
-                        {hotkeyToast}
-                      </div>
-                    )}
-
-                    {executionFlash && (
-                      <div className="absolute left-1/2 top-14 z-30 -translate-x-1/2 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1.5 text-[11px] text-emerald-300">
-                        {executionFlash}
-                      </div>
-                    )}
-
-                    <button
-                      onClick={() => {
-                        setDrawings([]);
-                        setDraftPoint(null);
-                      }}
-                      className="absolute right-16 bottom-12 rounded-full border border-white/10 bg-black/55 px-3 py-1.5 text-[11px] text-white/60 hover:text-white"
-                    >
-                      Clear drawings
-                    </button>
-
-                    <div className="absolute inset-y-0 right-0 z-20 w-16 border-l border-white/8 bg-black/55">
-                      {priceScale.map((price, idx) => (
-                        <div
-                          key={`${price}-${idx}`}
-                          className="absolute right-2 text-[10px] text-white/65"
-                          style={{ top: `${8 + idx * 10.5}%`, transform: "translateY(-50%)" }}
-                        >
-                          {formatPrice(price, profile.decimals)}
-                        </div>
+                  <div className="absolute inset-x-0 bottom-0 z-20 h-10 border-t border-white/8 bg-black/45 px-4 pr-16">
+                    <div className="flex h-full items-center justify-between text-[10px] text-white/50">
+                      {bottomLabels.map((label, idx) => (
+                        <span key={`${label}-${idx}`}>{label}</span>
                       ))}
-                    </div>
-
-                    <div className="absolute inset-x-0 bottom-0 z-20 h-10 border-t border-white/8 bg-black/45 px-4 pr-16">
-                      <div className="flex h-full items-center justify-between text-[10px] text-white/50">
-                        {bottomLabels.map((label, idx) => (
-                          <span key={`${label}-${idx}`}>{label}</span>
-                        ))}
-                      </div>
                     </div>
                   </div>
                 </div>
@@ -1103,16 +835,14 @@ export default function Tradovation() {
                   </summary>
 
                   <div className="mt-3 max-h-[18rem] space-y-4 overflow-y-auto pr-1 text-sm">
-                    {WATCHLIST_GROUPS.map((section) => (
+                    {WATCHLIST.map((section) => (
                       <div key={section.group}>
-                        <div className="mb-2 text-[10px] uppercase tracking-[0.26em] text-white/35">
-                          {section.group}
-                        </div>
+                        <div className="mb-2 text-[10px] uppercase tracking-[0.26em] text-white/35">{section.group}</div>
                         <div className="space-y-2">
                           {section.items.map((s, idx) => {
-                            const p = SYMBOL_PROFILES[s];
+                            const p = SYMBOLS[s];
                             const last = p.base + p.vol * 0.15;
-                            const sparkPath =
+                            const path =
                               idx % 2 === 0
                                 ? "M1 10 C8 9, 10 7, 16 6 C22 5, 26 7, 31 4 C34 3, 37 2, 39 2"
                                 : "M1 9 C6 7, 11 8, 16 5 C21 3, 26 4, 31 6 C35 7, 37 5, 39 3";
@@ -1126,17 +856,9 @@ export default function Tradovation() {
                                 }`}
                               >
                                 <div className="flex items-center gap-2">
-                                  <span className={`font-medium ${symbol === s ? "text-amber-300" : "text-white"}`}>
-                                    {s}
-                                  </span>
+                                  <span className={`font-medium ${symbol === s ? "text-amber-300" : "text-white"}`}>{s}</span>
                                   <svg viewBox="0 0 40 12" className="h-3 w-10 opacity-55 transition group-hover:opacity-90">
-                                    <path
-                                      d={sparkPath}
-                                      fill="none"
-                                      stroke="currentColor"
-                                      strokeWidth="1.4"
-                                      className="text-amber-300"
-                                    />
+                                    <path d={path} fill="none" stroke="currentColor" strokeWidth="1.4" className="text-amber-300" />
                                   </svg>
                                 </div>
 
@@ -1162,9 +884,9 @@ export default function Tradovation() {
                     ["Position size", "3 contracts"],
                     ["Bid", formatPrice(bid, profile.decimals)],
                     ["Ask", formatPrice(ask, profile.decimals)],
-                    ["Entry", formatPrice(fromScreenPct(orderLevels.entry), profile.decimals)],
-                    ["Stop", formatPrice(fromScreenPct(orderLevels.stop), profile.decimals)],
-                    ["Target", formatPrice(fromScreenPct(orderLevels.target), profile.decimals)],
+                    ["Entry", formatPrice(entryPrice, profile.decimals)],
+                    ["Stop", formatPrice(stopPrice, profile.decimals)],
+                    ["Target", formatPrice(targetPrice, profile.decimals)],
                     ["Live Price", formatPrice(simulatedPrice, profile.decimals)],
                     ["Unrealized", `${(simulatedPrice - entryPrice) * 3 >= 0 ? "+" : ""}${unrealizedPnL}`],
                     ["R Multiple", `${rMultiple}R`],
@@ -1179,9 +901,7 @@ export default function Tradovation() {
                 <button
                   onClick={() => setOrderMode((v) => !v)}
                   className={`mt-3 w-full rounded-full border px-4 py-3 text-sm font-semibold ${
-                    orderMode
-                      ? "border-amber-400/25 bg-amber-400/10 text-amber-300"
-                      : "border-white/10 bg-white/[0.03] text-white/70"
+                    orderMode ? "border-amber-400/25 bg-amber-400/10 text-amber-300" : "border-white/10 bg-white/[0.03] text-white/70"
                   }`}
                 >
                   {orderMode ? "Order-on-chart enabled" : "Enable order-on-chart"}
@@ -1216,10 +936,7 @@ export default function Tradovation() {
                     const sideUp = i % 2 === 0;
 
                     return (
-                      <div
-                        key={i}
-                        className="grid grid-cols-[1fr_auto_auto] gap-3 rounded-lg border border-white/6 bg-white/[0.02] px-3 py-2 text-[11px]"
-                      >
+                      <div key={i} className="grid grid-cols-[1fr_auto_auto] gap-3 rounded-lg border border-white/6 bg-white/[0.02] px-3 py-2 text-[11px]">
                         <span className="text-white/45">
                           {new Date(Date.now() - i * 2200).toLocaleTimeString([], {
                             hour: "2-digit",
@@ -1252,9 +969,7 @@ export default function Tradovation() {
                     tradeLog.map((trade, i) => (
                       <div key={`${trade.time}-${i}`} className="rounded-lg border border-white/6 bg-white/[0.02] px-3 py-3 text-[11px]">
                         <div className="flex items-center justify-between">
-                          <span className={trade.side === "BUY" ? "text-emerald-400" : "text-red-400"}>
-                            {trade.side}
-                          </span>
+                          <span className={trade.side === "BUY" ? "text-emerald-400" : "text-red-400"}>{trade.side}</span>
                           <span className="text-white/45">{trade.time}</span>
                         </div>
                         <div className="mt-1 text-white/75">
