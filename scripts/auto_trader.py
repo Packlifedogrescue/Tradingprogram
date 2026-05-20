@@ -213,63 +213,6 @@ def rsi_series(prices: np.ndarray, period: int = 14) -> np.ndarray:
     return result
 
 
-def macd_histogram(closes: np.ndarray) -> np.ndarray:
-    """MACD histogram (12 EMA - 26 EMA - 9-signal). Positive = bullish momentum."""
-    if len(closes) < 35:
-        return np.zeros(len(closes))
-    fast = ema(closes, 12)
-    slow = ema(closes, 26)
-    macd_line = fast - slow
-    signal_line = ema(macd_line, 9)
-    return macd_line - signal_line
-
-
-def indicator_exit_check(
-    direction: str,
-    closes: np.ndarray, highs: np.ndarray, lows: np.ndarray, opens: np.ndarray,
-    pnl_pct: float,
-    min_profit_pct: float = 0.15,
-) -> Optional[str]:
-    """
-    Read the chart and return an exit reason if momentum has turned against the position.
-    Only fires when pnl_pct >= min_profit_pct so we don't exit on noise right after entry.
-    Checks: RSI exhaustion, MACD cross, Bollinger band touch, reversal candle.
-    """
-    rsi_val = rsi(closes)
-
-    # RSI overbought/oversold — momentum exhaustion
-    if direction == "CALL" and rsi_val >= 75 and pnl_pct >= min_profit_pct:
-        return "rsi_overbought"
-    if direction == "PUT" and rsi_val <= 25 and pnl_pct >= min_profit_pct:
-        return "rsi_oversold"
-
-    # MACD histogram flip — momentum crossed against position
-    hist = macd_histogram(closes)
-    if len(hist) >= 2:
-        if direction == "CALL" and hist[-1] < 0 < hist[-2] and pnl_pct >= min_profit_pct:
-            return "macd_bearish_cross"
-        if direction == "PUT" and hist[-1] > 0 > hist[-2] and pnl_pct >= min_profit_pct:
-            return "macd_bullish_cross"
-
-    # Bollinger band extension — price stretched beyond 2-sigma band, likely to revert
-    lo, _mid, hi = bollinger(closes)
-    if hi is not None and lo is not None:
-        cur = float(closes[-1])
-        if direction == "CALL" and cur >= hi * 0.998 and pnl_pct >= min_profit_pct:
-            return "bb_upper_touch"
-        if direction == "PUT" and cur <= lo * 1.002 and pnl_pct >= min_profit_pct:
-            return "bb_lower_touch"
-
-    # Strong reversal candle against the position
-    if len(opens) >= len(closes):
-        pattern_dir, pattern_conf = candlestick_signal(opens, closes, highs, lows, rsi_val)
-        if (pattern_dir and pattern_dir != direction
-                and pattern_conf >= 72 and pnl_pct >= min_profit_pct):
-            return "candle_reversal"
-
-    return None
-
-
 # ---------------------------------------------------------------------------
 # Signal strategies
 # ---------------------------------------------------------------------------
@@ -355,15 +298,18 @@ def bull_bear_flag(
     avg_flag_vol = flag_vols.mean()
     vol_declining = avg_flag_vol < avg_pole_vol * 0.80
 
+    # Flag range should be narrow relative to the pole (coiling)
     flag_range_pct = (flag_highs.max() - flag_lows.min()) / max(abs(pole_end), 1)
     tight_flag = flag_range_pct < abs(pole_move) * 0.55
 
     cur = closes[-1]
 
     if pole_move >= MIN_POLE_PCT:
+        # Flag drift: slight pullback or flat (bearish tilt against the bullish pole)
         flag_slope = (flag_closes[-1] - flag_closes[0]) / max(flag_closes[0], 1)
         consolidating = -0.025 <= flag_slope <= 0.005
 
+        # Breakout: current close above the highest close in the flag body (excl. today)
         flag_body_high = flag_highs[:-1].max() if len(flag_highs) > 1 else flag_highs[0]
         breaking_out = cur >= flag_body_high * 0.998
 
@@ -409,6 +355,7 @@ def fvg_signal(
     n   = len(closes)
     LOOKBACK = min(30, n - 1)
 
+    # Walk back through recent candles looking for the freshest unfilled FVG
     best_bull: Optional[tuple[float, float, int]] = None
     best_bear: Optional[tuple[float, float, int]] = None
 
@@ -416,13 +363,16 @@ def fvg_signal(
         if i < 2:
             break
 
+        # Bullish FVG at candle i
         gap_lo = highs[i - 2]
         gap_hi = lows[i]
         if gap_lo < gap_hi:
+            # Check it hasn't been fully closed by a subsequent low
             filled = any(lows[j] < gap_lo for j in range(i + 1, n))
             if not filled and best_bull is None:
                 best_bull = (gap_lo, gap_hi, i)
 
+        # Bearish FVG at candle i
         gap_hi2 = lows[i - 2]
         gap_lo2 = highs[i]
         if gap_lo2 < gap_hi2:
@@ -430,6 +380,7 @@ def fvg_signal(
             if not filled and best_bear is None:
                 best_bear = (gap_lo2, gap_hi2, i)
 
+    # Bullish FVG retest: price pulls back into the gap (potential support)
     if best_bull:
         g_lo, g_hi, g_idx = best_bull
         if g_lo * 0.999 <= cur <= g_hi * 1.001:
@@ -437,6 +388,7 @@ def fvg_signal(
             conf = 55 + int(freshness * 1.75)
             return "CALL", min(88, conf)
 
+    # Bearish FVG retest: price rallies into the gap (potential resistance)
     if best_bear:
         g_lo, g_hi, g_idx = best_bear
         if g_lo * 0.999 <= cur <= g_hi * 1.001:
@@ -474,7 +426,7 @@ def pivot_signal(
     S2 = PP - (H - L)
 
     cur = float(closes[-1])
-    TOL = 0.005
+    TOL = 0.005  # within 0.5% of a level
 
     def near(price: float, level: float) -> bool:
         return abs(price - level) / max(abs(level), 1e-9) <= TOL
@@ -482,17 +434,21 @@ def pivot_signal(
     def between(price: float, lo: float, hi: float) -> bool:
         return lo * (1 - TOL) <= price <= hi * (1 + TOL)
 
+    # Bullish: bounce off S1 / S2 support zone
     if between(cur, S2, S1) and rsi_val < 50:
         conf = 72 if near(cur, S2) else 62
         return "CALL", conf
 
+    # Bullish momentum break: closes above R1 when prior close was below R1
     if cur > R1 and prev_c <= R1 and rsi_val > 50:
         return "CALL", 68
 
+    # Bearish: rejection at R1 / R2 resistance zone
     if between(cur, R1, R2) and rsi_val > 50:
         conf = 72 if near(cur, R2) else 62
         return "PUT", conf
 
+    # Bearish momentum break: closes below S1 when prior close was above S1
     if cur < S1 and prev_c >= S1 and rsi_val < 50:
         return "PUT", 68
 
@@ -513,17 +469,21 @@ def vwap_signal(
     typical = (highs[-20:] + lows[-20:] + closes[-20:]) / 3
     vwap    = float((typical * volumes[-20:]).sum() / volumes[-20:].sum())
     cur, prev = float(closes[-1]), float(closes[-2])
-    TOL = 0.002
+    TOL = 0.002  # 0.2%
 
+    # Reclaim: crossed above VWAP from below
     if prev < vwap and cur >= vwap * (1 - TOL) and rsi_val > 48:
         return "CALL", 66
 
+    # Rejection: crossed below VWAP from above
     if prev > vwap and cur <= vwap * (1 + TOL) and rsi_val < 52:
         return "PUT", 66
 
+    # Holding VWAP as support (price dipping to VWAP and holding)
     if vwap * 0.998 <= cur <= vwap * 1.003 and prev >= vwap and rsi_val > 45:
         return "CALL", 58
 
+    # VWAP as resistance (price rallying to VWAP and stalling)
     if vwap * 0.997 <= cur <= vwap * 1.002 and prev <= vwap and rsi_val < 55:
         return "PUT", 58
 
@@ -533,11 +493,17 @@ def vwap_signal(
 def gap_signal(
     opens: np.ndarray, closes: np.ndarray, highs: np.ndarray, lows: np.ndarray
 ) -> tuple[Optional[str], int]:
+    """
+    Price gaps -- when today's open left a gap vs prior close that hasn't been filled.
+    Unfilled gap above current price = bullish (acts as support below price moved up).
+    Unfilled gap below current price = bearish (acts as resistance above price moved down).
+    Also signals when current candle is actively filling a gap (mean-reversion momentum).
+    """
     n = len(closes)
     if n < 5 or len(opens) < n:
         return None, 0
 
-    MIN_GAP = 0.005
+    MIN_GAP = 0.005  # 0.5% minimum gap size
     LOOKBACK = min(25, n - 1)
     cur = float(closes[-1])
 
@@ -547,26 +513,107 @@ def gap_signal(
         gap_pct = (float(opens[i]) - float(closes[i - 1])) / float(closes[i - 1])
 
         if gap_pct >= MIN_GAP:
+            # Upward gap: zone = [closes[i-1], opens[i]]
             g_lo, g_hi = float(closes[i - 1]), float(opens[i])
+            # Unfilled if no subsequent candle low reached back into the zone
             unfilled = all(float(lows[j]) >= g_lo * 0.999 for j in range(i, n))
             if unfilled:
                 age = n - 1 - i
                 conf = max(55, 72 - age * 2)
                 if cur >= g_lo * 0.997:
-                    return "CALL", conf
+                    return "CALL", conf  # gap below acting as support
                 break
 
         elif gap_pct <= -MIN_GAP:
+            # Downward gap: zone = [opens[i], closes[i-1]]
             g_lo, g_hi = float(opens[i]), float(closes[i - 1])
             unfilled = all(float(highs[j]) <= g_hi * 1.001 for j in range(i, n))
             if unfilled:
                 age = n - 1 - i
                 conf = max(55, 72 - age * 2)
                 if cur <= g_hi * 1.003:
-                    return "PUT", conf
+                    return "PUT", conf  # gap above acting as resistance
                 break
 
     return None, 0
+
+
+def macd_histogram(closes: np.ndarray) -> np.ndarray:
+    """MACD histogram (12 EMA - 26 EMA - 9-signal). Positive = bullish momentum."""
+    if len(closes) < 35:
+        return np.zeros(len(closes))
+    fast = ema(closes, 12)
+    slow = ema(closes, 26)
+    macd_line = fast - slow
+    signal_line = ema(macd_line, 9)
+    return macd_line - signal_line
+
+
+def macd_entry_signal(closes: np.ndarray) -> tuple[Optional[str], int]:
+    """
+    MACD histogram as an entry signal.
+    Zero-line cross = strongest (momentum just shifted direction).
+    Three consecutive bars trending = momentum building.
+    """
+    hist = macd_histogram(closes)
+    if len(hist) < 3:
+        return None, 0
+    h0, h1, h2 = float(hist[-1]), float(hist[-2]), float(hist[-3])
+    if h0 > 0 and h1 <= 0:                # bullish zero-cross
+        return "CALL", min(72, 60 + int(abs(h0) * 400))
+    if h0 < 0 and h1 >= 0:                # bearish zero-cross
+        return "PUT",  min(72, 60 + int(abs(h0) * 400))
+    if h0 > h1 > h2 > 0:                  # momentum building bullish
+        return "CALL", min(66, 54 + int(abs(h0) * 300))
+    if h0 < h1 < h2 < 0:                  # momentum building bearish
+        return "PUT",  min(66, 54 + int(abs(h0) * 300))
+    return None, 0
+
+
+def indicator_exit_check(
+    direction: str,
+    closes: np.ndarray, highs: np.ndarray, lows: np.ndarray, opens: np.ndarray,
+    pnl_pct: float,
+    min_profit_pct: float = 0.15,
+) -> Optional[str]:
+    """
+    Read the chart and return an exit reason if momentum has turned against the position.
+    Only fires when pnl_pct >= min_profit_pct so we don't exit on noise right after entry.
+    Checks: RSI exhaustion, MACD cross, Bollinger band touch, reversal candle.
+    """
+    rsi_val = rsi(closes)
+
+    # RSI overbought/oversold -- momentum exhaustion
+    if direction == "CALL" and rsi_val >= 75 and pnl_pct >= min_profit_pct:
+        return "rsi_overbought"
+    if direction == "PUT" and rsi_val <= 25 and pnl_pct >= min_profit_pct:
+        return "rsi_oversold"
+
+    # MACD histogram flip -- momentum crossed against position
+    hist = macd_histogram(closes)
+    if len(hist) >= 2:
+        if direction == "CALL" and hist[-1] < 0 < hist[-2] and pnl_pct >= min_profit_pct:
+            return "macd_bearish_cross"
+        if direction == "PUT" and hist[-1] > 0 > hist[-2] and pnl_pct >= min_profit_pct:
+            return "macd_bullish_cross"
+
+    # Bollinger band extension -- price stretched beyond 2sigma band, likely to revert
+    lo, _mid, hi = bollinger(closes)
+    if hi is not None and lo is not None:
+        cur = float(closes[-1])
+        if direction == "CALL" and cur >= hi * 0.998 and pnl_pct >= min_profit_pct:
+            return "bb_upper_touch"
+        if direction == "PUT" and cur <= lo * 1.002 and pnl_pct >= min_profit_pct:
+            return "bb_lower_touch"
+
+    # Strong reversal candle against the position
+    if len(opens) >= len(closes):
+        pattern_dir, pattern_conf = candlestick_signal(opens, closes, highs, lows, rsi_val)
+        if (pattern_dir and pattern_dir != direction
+                and pattern_conf >= 72 and pnl_pct >= min_profit_pct):
+            return "candle_reversal"
+
+    return None
 
 
 def rsi_divergence(closes: np.ndarray) -> tuple[Optional[str], int]:
@@ -580,7 +627,7 @@ def rsi_divergence(closes: np.ndarray) -> tuple[Optional[str], int]:
 
     rsi_vals = rsi_series(closes)
     LOOKBACK = 20
-    WING = 3
+    WING = 3  # bars on each side to define a swing point
 
     c = closes[-LOOKBACK:]
     r = rsi_vals[-LOOKBACK:]
@@ -596,12 +643,14 @@ def rsi_divergence(closes: np.ndarray) -> tuple[Optional[str], int]:
     p = peaks(c)
     t = troughs(c)
 
+    # Bearish divergence: two price peaks, second > first, RSI second < first
     if len(p) >= 2:
         p1, p2 = p[-2], p[-1]
         if c[p2] > c[p1] * 1.001 and r[p2] < r[p1] - 4:
             div_strength = r[p1] - r[p2]
             return "PUT", min(82, 54 + int(div_strength * 1.1))
 
+    # Bullish divergence: two price troughs, second < first, RSI second > first
     if len(t) >= 2:
         t1, t2 = t[-2], t[-1]
         if c[t2] < c[t1] * 0.999 and r[t2] > r[t1] + 4:
@@ -637,19 +686,23 @@ def candlestick_signal(
     upper_wick = ch - max(co, cc)
     lower_wick = min(co, cc) - cl
 
+    # Bullish engulfing
     if pc < po and cc > co and co <= pc and cc >= po and rsi_val < 62:
         conf = 72 + (10 if rsi_val < 40 else 0)
         return "CALL", min(90, conf)
 
+    # Bearish engulfing
     if pc > po and cc < co and co >= pc and cc <= po and rsi_val > 38:
         conf = 72 + (10 if rsi_val > 60 else 0)
         return "PUT", min(90, conf)
 
     if body > 0:
+        # Hammer: lower wick >= 2x body, upper wick <= 30% of body
         if lower_wick >= 2.0 * body and upper_wick <= 0.3 * body and rsi_val < 52:
             conf = 65 + (12 if rsi_val < 35 else 0)
             return "CALL", min(85, conf)
 
+        # Shooting star: upper wick >= 2x body, lower wick <= 30% of body
         if upper_wick >= 2.0 * body and lower_wick <= 0.3 * body and rsi_val > 48:
             conf = 65 + (12 if rsi_val > 65 else 0)
             return "PUT", min(85, conf)
@@ -658,6 +711,11 @@ def candlestick_signal(
 
 
 def options_flow_signal(chain: Optional[dict]) -> tuple[Optional[str], int]:
+    """
+    Unusual options activity -- call/put volume ratio and volume-to-OI ratio.
+    High call volume with low PCR -> smart money positioning bullish.
+    High put volume with high PCR -> smart money positioning bearish.
+    """
     if not chain:
         return None, 0
     options = chain.get("options", [])
@@ -672,17 +730,19 @@ def options_flow_signal(chain: Optional[dict]) -> tuple[Optional[str], int]:
     call_oi  = sum(o.get("openInterest", 0) or 0 for o in calls)
     put_oi   = sum(o.get("openInterest", 0) or 0 for o in puts)
 
-    if call_vol + put_vol < 50:
+    if call_vol + put_vol < 50:  # not enough activity to be meaningful
         return None, 0
 
     pcr     = put_vol / max(call_vol, 1)
-    call_vor = call_vol / max(call_oi, 1)
+    call_vor = call_vol / max(call_oi, 1)  # volume/OI -- unusually high = informed flow
     put_vor  = put_vol  / max(put_oi, 1)
 
+    # Bullish: PCR < 0.6 with meaningful call activity
     if pcr < 0.60 and call_vor > 0.10:
         conf = min(80, 58 + int((0.60 - pcr) * 60) + int(min(call_vor * 120, 15)))
         return "CALL", conf
 
+    # Bearish: PCR > 1.5 with meaningful put activity
     if pcr > 1.50 and put_vor > 0.10:
         conf = min(80, 58 + int((pcr - 1.50) * 35) + int(min(put_vor * 120, 15)))
         return "PUT", conf
@@ -691,6 +751,13 @@ def options_flow_signal(chain: Optional[dict]) -> tuple[Optional[str], int]:
 
 
 def iv_rank_modifier(chain: Optional[dict], hv30_val: float) -> float:
+    """
+    Returns a confidence multiplier based on how cheap/expensive implied vol is.
+    For single-leg long options: cheap IV is a tailwind, expensive IV is a headwind.
+      IV/HV < 0.80  -> +15% confidence (cheap to buy)
+      IV/HV 0.80-1.20 -> no change
+      IV/HV > 1.40  -> -15% confidence (expensive to buy)
+    """
     if not chain or hv30_val <= 0:
         return 1.0
     atm = atm_iv_from_chain(chain) * 100
@@ -704,8 +771,8 @@ def iv_rank_modifier(chain: Optional[dict], hv30_val: float) -> float:
     return 1.0
 
 
-TOTAL_STRATEGIES = 11  # trend, mean_reversion, breakout, flag, fvg, pivot,
-                       # vwap, gap, rsi_divergence, candlestick, options_flow
+TOTAL_STRATEGIES = 12  # trend, mean_reversion, breakout, flag, fvg, pivot,
+                       # vwap, gap, rsi_divergence, candlestick, options_flow, macd
 
 
 def run_signal_engine(ohlcv: dict, chain: Optional[dict] = None) -> dict:
@@ -730,6 +797,7 @@ def run_signal_engine(ohlcv: dict, chain: Optional[dict] = None) -> dict:
         ("divergence",     lambda: rsi_divergence(closes)),
         ("candle",         lambda: candlestick_signal(opens, closes, highs, lows, rsi_val)),
         ("flow",           lambda: options_flow_signal(chain)),
+        ("macd",           lambda: macd_entry_signal(closes)),
     ]:
         direction, conf = fn()
         if direction:
@@ -745,7 +813,9 @@ def run_signal_engine(ohlcv: dict, chain: Optional[dict] = None) -> dict:
     agreement = len(dominant)
     avg_conf  = sum(s["confidence"] for s in dominant) / len(dominant)
 
+    # Agreement multiplier scales 0.715 -> 1.35 across 1->11 strategies
     agree_mult = 0.65 + (agreement / TOTAL_STRATEGIES) * 0.70
+    # IV rank modifier: cheap IV boosts, expensive IV penalises
     iv_mult = iv_rank_modifier(chain, hv30_val)
     final_conf = int(avg_conf * agree_mult * iv_mult)
 
@@ -877,6 +947,7 @@ def fetch_chain(ticker: str) -> Optional[dict]:
 
     base = cfg.tastytrade_base
 
+    # Nested chain (expirations + strikes in one call)
     try:
         r = requests.get(
             f"{base}/option-chains/{ticker}/nested",
@@ -889,11 +960,13 @@ def fetch_chain(ticker: str) -> Optional[dict]:
 
     raw_expirations = (data.get("data") or {}).get("items") or []
 
+    # Collect all expiration date strings
     expirations: list[str] = sorted({
         item.get("expiration-date", "") for item in raw_expirations
         if item.get("expiration-date")
     })
 
+    # Underlying price -- fetch from a separate quotes call
     try:
         qr = requests.get(
             f"{base}/market-data/options/{ticker}",
@@ -905,6 +978,7 @@ def fetch_chain(ticker: str) -> Optional[dict]:
     except Exception:
         underlying = 0.0
 
+    # Find an expiration within DTE window
     today = date.today()
     chosen_exp: Optional[str] = None
     chosen_items: list = []
@@ -927,6 +1001,9 @@ def fetch_chain(ticker: str) -> Optional[dict]:
 
     dte_chosen = (date.fromisoformat(chosen_exp) - today).days
 
+    # Normalise strikes into the shared option dict shape.
+    # Tastytrade nested strikes look like:
+    #   {"strike-price": "450.0", "call": {...}, "put": {...}}
     options: list[dict] = []
     for strike_row in chosen_items:
         strike_price = float(strike_row.get("strike-price", 0) or 0)
@@ -968,8 +1045,9 @@ def select_contract(chain: dict, direction: str) -> Optional[dict]:
     if not options:
         return None
 
-    max_price = cfg.max_contract_price
+    max_price = cfg.max_contract_price  # per-contract price ceiling
 
+    # Target delta ~0.40 (slightly OTM for risk management)
     target_delta = 0.40 if direction == "CALL" else -0.40
 
     def delta_score(o: dict) -> float:
@@ -988,11 +1066,13 @@ def select_contract(chain: dict, direction: str) -> Optional[dict]:
     liquid = [o for o in options if has_liquidity(o)]
     candidates = liquid if liquid else options
 
+    # Apply price ceiling filter
     affordable_candidates = [o for o in candidates if affordable(o)]
     if not affordable_candidates:
-        print(f"  [CONTRACT] No contracts under ${max_price:.2f} — relaxing price filter")
-        affordable_candidates = candidates
+        print(f"  [CONTRACT] No contracts under ${max_price:.2f} -- relaxing price filter")
+        affordable_candidates = candidates  # fall back to all if nothing affordable
 
+    # Prefer OTM for calls (strike > underlying), ITM for risk mgmt
     if direction == "CALL":
         otm = [o for o in affordable_candidates if o["strike"] > underlying * 0.99]
     else:
@@ -1161,12 +1241,13 @@ def place_order(ticker: str, direction: str, contract: dict, contracts: int, dry
     if not rh_login():
         return False, None
 
+    # Check buying power before placing
     buying_power = get_buying_power()
     print(f"  [RH] Buying power: ${buying_power:.2f}  |  Trade cost: ${estimated_cost:.2f}")
     if buying_power < estimated_cost:
-        msg = f"Insufficient funds — need ${estimated_cost:.2f}, have ${buying_power:.2f}"
+        msg = f"Insufficient funds -- need ${estimated_cost:.2f}, have ${buying_power:.2f}"
         print(f"  [SKIP] {msg}")
-        notify(f"BOT SKIPPED {ticker} {direction} — Not enough funds",
+        notify(f"BOT SKIPPED {ticker} {direction} -- Not enough funds",
                f"Need ${estimated_cost:.2f} to place trade\nRobinhood balance: ${buying_power:.2f}\n"
                f"Deposit more funds or lower contract sizes in .env.local")
         return False, None
@@ -1186,7 +1267,7 @@ def place_order(ticker: str, direction: str, contract: dict, contracts: int, dry
         )
         order_id = result.get("id") if result else None
         if order_id:
-            print(f"  [RH] Order placed — ID: {order_id}  Status: {result.get('state', '?')}")
+            print(f"  [RH] Order placed -- ID: {order_id}  Status: {result.get('state', '?')}")
         else:
             print(f"  [RH] Order response: {json.dumps(result, indent=2)}")
         return bool(order_id), order_id
@@ -1288,16 +1369,16 @@ def close_position(pos: dict, exit_price: float, reason: str, dry_run: bool) -> 
         "signal_reversal":    "Signal Reversed",
         "reversal":           "Signal Reversed",
         "force_close":        "Force Closed (EOD)",
-        "rsi_overbought":     "RSI Overbought — locking gains",
-        "rsi_oversold":       "RSI Oversold — locking gains",
+        "rsi_overbought":     "RSI Overbought -- locking gains",
+        "rsi_oversold":       "RSI Oversold -- locking gains",
         "macd_bearish_cross": "MACD Bearish Cross",
         "macd_bullish_cross": "MACD Bullish Cross",
-        "bb_upper_touch":     "Bollinger Upper Band — stretched",
-        "bb_lower_touch":     "Bollinger Lower Band — stretched",
+        "bb_upper_touch":     "Bollinger Upper Band -- stretched",
+        "bb_lower_touch":     "Bollinger Lower Band -- stretched",
         "candle_reversal":    "Reversal Candle Pattern",
     }.get(reason, reason)
     notify(
-        f"{'[DRY RUN] ' if dry_run else ''}BOT EXITED {ticker} {direction} — {outcome}  ${pnl:+.2f}",
+        f"{'[DRY RUN] ' if dry_run else ''}BOT EXITED {ticker} {direction} -- {outcome}  ${pnl:+.2f}",
         f"Ticker: {ticker}\nDirection: {direction}\nOutcome: {outcome}\nP&L: ${pnl:+.2f}\n"
         f"Reason: {reason_label}\nEntry: ${entry:.2f} -> Exit: ${exit_price:.2f}\nContracts: {contracts}",
     )
@@ -1330,6 +1411,7 @@ def close_position(pos: dict, exit_price: float, reason: str, dry_run: bool) -> 
         "pnl":         pnl,
         "status":      "closed",
     })
+    # Sync outcome back to signal_log
     if pos.get("signal_id"):
         outcome = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "SCRATCH")
         _sb_patch("signal_log", pos["signal_id"], {"outcome": outcome, "outcome_pnl": pnl})
@@ -1346,9 +1428,10 @@ def check_position(pos: dict, dry_run: bool) -> bool:
 
     bid, ask = fetch_option_quote(opt_symbol)
     if bid <= 0 and ask <= 0:
-        return False  # Can't get a quote — skip this cycle
+        return False  # Can't get a quote -- skip this cycle
     mid = (bid + ask) / 2
 
+    # Update live price and peak
     new_peak = max(peak, mid)
     _sb_patch("positions", pos["id"], {"current_price": mid, "peak_price": new_peak})
 
@@ -1358,12 +1441,12 @@ def check_position(pos: dict, dry_run: bool) -> bool:
     print(f"  [{ticker} {direction}] entry ${entry:.2f}  now ${mid:.2f}  "
           f"P&L {pnl_pct*100:+.1f}%  peak {peak_pct*100:+.1f}%")
 
-    # Stop loss
+    # -- Stop loss --------------------------------------------------------------
     if pnl_pct <= -cfg.stop_loss_pct:
         close_position(pos, max(bid, 0.01), "stop_loss", dry_run)
         return True
 
-    # Tiered trailing stop — rides the move, never caps it
+    # -- Tiered trailing stop -- rides the move, never caps it -----------------
     # Kicks in after trail_start_pct gain, tightens as position grows larger.
     # SPX example: $1.90 entry -> $1000 peak -> exits near $900, not at $3.80.
     if peak_pct >= cfg.trail_start_pct:
@@ -1379,12 +1462,12 @@ def check_position(pos: dict, dry_run: bool) -> bool:
             close_position(pos, bid, "trail_stop", dry_run)
             return True
 
-    # Safety-net take profit (very high — rarely fires)
+    # -- Safety-net take profit (very high -- rarely fires, prevents runaway loss of gains)
     if pnl_pct >= cfg.take_profit_pct:
         close_position(pos, bid, "take_profit", dry_run)
         return True
 
-    # Chart-based exits (indicator checks + signal reversal)
+    # -- Chart-based exits (indicator checks + signal reversal) ----------------
     # Both reuse the same OHLCV fetch to save API calls.
     if cfg.indicator_exit or cfg.signal_exit:
         ohlcv = fetch_ohlcv(ticker)
@@ -1445,34 +1528,159 @@ def daily_remaining() -> int:
 # Market hours
 # ---------------------------------------------------------------------------
 
+def _et_now() -> datetime:
+    """Current time in US/Eastern, DST-aware (no external dependency)."""
+    utc = datetime.now(timezone.utc)
+    y   = utc.year
+    mar1 = date(y, 3, 1)
+    dst_start = date(y, 3, 1 + (6 - mar1.weekday()) % 7 + 7)   # 2nd Sunday of March
+    nov1 = date(y, 11, 1)
+    dst_end = date(y, 11, 1 + (6 - nov1.weekday()) % 7)         # 1st Sunday of November
+    offset = timedelta(hours=-4) if dst_start <= utc.date() < dst_end else timedelta(hours=-5)
+    return (utc + offset).replace(tzinfo=None)
+
+
 def is_market_open() -> bool:
-    now_et = datetime.now(timezone.utc).astimezone(
-        type('ET', (), {'utcoffset': lambda s, d: timedelta(hours=-4), 'tzname': lambda s, d: 'ET', 'dst': lambda s, d: timedelta(0)})()
-    )
-    if now_et.weekday() >= 5:
+    et = _et_now()
+    if et.weekday() >= 5:
         return False
-    market_open  = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
-    market_close = now_et.replace(hour=16, minute=0,  second=0, microsecond=0)
-    return market_open <= now_et <= market_close
+    o = et.replace(hour=9,  minute=30, second=0, microsecond=0)
+    c = et.replace(hour=16, minute=0,  second=0, microsecond=0)
+    return o <= et <= c
+
+
+def is_trading_window() -> tuple[bool, str]:
+    """
+    True only 10:00 AM - 3:30 PM ET.
+    Skips the opening 30-min whipsaw and the closing rush.
+    Only affects new entries -- position monitoring runs regardless.
+    """
+    et = _et_now()
+    h, m = et.hour, et.minute
+    if h < 10:
+        return False, f"waiting for 10:00 AM ET (now {h:02d}:{m:02d})"
+    if (h == 15 and m >= 30) or h >= 16:
+        return False, "no new entries after 3:30 PM ET"
+    return True, ""
+
+
+# Known high-impact events: bot will not open new positions during these windows.
+# FOMC: blackout 30 min before -> 45 min after 2:00 PM announcement.
+# CPI/NFP: released pre-market at 8:30 AM -- block 9:30 AM -> 10:30 AM (first hour of trading).
+_HIGH_IMPACT_EVENTS: list[tuple[str, str, int, int]] = [
+    # (date, name, hour_ET, minute_ET)
+    # -- FOMC decision dates -------------------------------------------------
+    ("2025-01-29", "FOMC", 14, 0), ("2025-03-19", "FOMC", 14, 0),
+    ("2025-05-07", "FOMC", 14, 0), ("2025-06-18", "FOMC", 14, 0),
+    ("2025-07-30", "FOMC", 14, 0), ("2025-09-17", "FOMC", 14, 0),
+    ("2025-10-29", "FOMC", 14, 0), ("2025-12-10", "FOMC", 14, 0),
+    ("2026-01-28", "FOMC", 14, 0), ("2026-03-18", "FOMC", 14, 0),
+    ("2026-05-06", "FOMC", 14, 0), ("2026-06-17", "FOMC", 14, 0),
+    ("2026-07-29", "FOMC", 14, 0), ("2026-09-16", "FOMC", 14, 0),
+    ("2026-10-28", "FOMC", 14, 0), ("2026-12-09", "FOMC", 14, 0),
+    # -- CPI release dates ---------------------------------------------------
+    ("2025-01-15", "CPI",  8, 30), ("2025-02-12", "CPI",  8, 30),
+    ("2025-03-12", "CPI",  8, 30), ("2025-04-10", "CPI",  8, 30),
+    ("2025-05-13", "CPI",  8, 30), ("2025-06-11", "CPI",  8, 30),
+    ("2025-07-15", "CPI",  8, 30), ("2025-08-12", "CPI",  8, 30),
+    ("2025-09-10", "CPI",  8, 30), ("2025-10-14", "CPI",  8, 30),
+    ("2025-11-12", "CPI",  8, 30), ("2025-12-10", "CPI",  8, 30),
+    ("2026-01-14", "CPI",  8, 30), ("2026-02-11", "CPI",  8, 30),
+    ("2026-03-11", "CPI",  8, 30), ("2026-04-08", "CPI",  8, 30),
+    ("2026-05-13", "CPI",  8, 30), ("2026-06-10", "CPI",  8, 30),
+    ("2026-07-15", "CPI",  8, 30), ("2026-08-12", "CPI",  8, 30),
+    ("2026-09-09", "CPI",  8, 30), ("2026-10-14", "CPI",  8, 30),
+    ("2026-11-12", "CPI",  8, 30), ("2026-12-09", "CPI",  8, 30),
+    # -- NFP / Jobs report ---------------------------------------------------
+    ("2025-01-10", "NFP",  8, 30), ("2025-02-07", "NFP",  8, 30),
+    ("2025-03-07", "NFP",  8, 30), ("2025-04-04", "NFP",  8, 30),
+    ("2025-05-02", "NFP",  8, 30), ("2025-06-06", "NFP",  8, 30),
+    ("2025-07-03", "NFP",  8, 30), ("2025-08-01", "NFP",  8, 30),
+    ("2025-09-05", "NFP",  8, 30), ("2025-10-03", "NFP",  8, 30),
+    ("2025-11-07", "NFP",  8, 30), ("2025-12-05", "NFP",  8, 30),
+    ("2026-01-09", "NFP",  8, 30), ("2026-02-06", "NFP",  8, 30),
+    ("2026-03-06", "NFP",  8, 30), ("2026-04-03", "NFP",  8, 30),
+    ("2026-05-01", "NFP",  8, 30), ("2026-06-05", "NFP",  8, 30),
+    ("2026-07-02", "NFP",  8, 30), ("2026-08-07", "NFP",  8, 30),
+    ("2026-09-04", "NFP",  8, 30), ("2026-10-02", "NFP",  8, 30),
+    ("2026-11-06", "NFP",  8, 30), ("2026-12-04", "NFP",  8, 30),
+]
+
+
+def is_near_high_impact_event() -> tuple[bool, str]:
+    """
+    Returns (True, event_name) when inside a no-trade blackout window.
+    FOMC: 30 min before -> 45 min after 2 PM announcement.
+    CPI/NFP: 9:30 AM open -> 10:30 AM (first trading hour, vol still settling).
+    """
+    et = _et_now()
+    today = et.strftime("%Y-%m-%d")
+    for ev_date, ev_name, ev_h, ev_m in _HIGH_IMPACT_EVENTS:
+        if ev_date != today:
+            continue
+        ev_time = et.replace(hour=ev_h, minute=ev_m, second=0, microsecond=0)
+        if ev_name == "FOMC":
+            blk_start = ev_time - timedelta(minutes=30)
+            blk_end   = ev_time + timedelta(minutes=45)
+        else:
+            blk_start = et.replace(hour=9,  minute=30, second=0, microsecond=0)
+            blk_end   = et.replace(hour=10, minute=30, second=0, microsecond=0)
+        if blk_start <= et <= blk_end:
+            return True, ev_name
+    return False, ""
+
+
+def _market_breadth_agrees(direction: str, ticker: str) -> bool:
+    """
+    Macro breadth proxy: SPY confirms QQQ trades and vice-versa; SPY confirms all others.
+    Only blocks when the reference index is in a confirmed opposing trend (conf >= 65).
+    Returns True when uncertain -- never silences a valid signal over a minor divergence.
+    """
+    t = ticker.upper()
+    ref = "QQQ" if t in ("SPY", "SPX", "SPXW") else "SPY"
+    if t == ref:
+        return True
+    ohlcv = fetch_ohlcv(ref)
+    if not ohlcv:
+        return True  # network issue -- allow trade
+    closes  = np.array(ohlcv["closes"], dtype=float)
+    rsi_val = rsi(closes)
+    trend_dir, trend_conf = trend_momentum(closes, rsi_val)
+    return not (trend_dir and trend_dir != direction and trend_conf >= 65)
 
 
 # ---------------------------------------------------------------------------
-# Core scan — one ticker
+# Core scan -- one ticker
 # ---------------------------------------------------------------------------
 
 def scan_ticker(ticker: str, dry_run: bool) -> None:
     print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scanning {ticker}...")
 
+    # Time-of-day gate -- entries only 10:00 AM - 3:30 PM ET
+    in_window, window_reason = is_trading_window()
+    if not in_window:
+        print(f"  [SKIP] {window_reason}")
+        return
+
+    # High-impact event blackout -- no new entries near FOMC / CPI / NFP
+    near_event, event_name = is_near_high_impact_event()
+    if near_event:
+        print(f"  [SKIP] {event_name} blackout -- no new entries during event window")
+        return
+
+    # 1. OHLCV
     ohlcv = fetch_ohlcv(ticker)
     if not ohlcv:
         print(f"  [SKIP] No price data")
         return
 
+    # 2. Fetch chain early -- options flow and IV rank vote in the signal engine
     chain = fetch_chain(ticker)
     if not chain or not chain.get("chosenExpiration"):
         print(f"  [SKIP] No expiration in {cfg.min_dte}-{cfg.max_dte} DTE window")
         return
 
+    # 3. Signal engine (chain passed in for flow + IV rank)
     sig = run_signal_engine(ohlcv, chain=chain)
     fired = ", ".join(s["strategy"] for s in sig["signals"]) or "none"
     iv_tag = f"  IV*{sig.get('iv_mult', 1.0):.2f}" if sig.get("iv_mult", 1.0) != 1.0 else ""
@@ -1484,22 +1692,26 @@ def scan_ticker(ticker: str, dry_run: bool) -> None:
         print(f"  [SKIP] No signal")
         return
 
+    # 4. Earnings guard
     earnings_date, days_to_earnings = fetch_earnings(ticker)
     if days_to_earnings is not None and days_to_earnings <= 7:
-        print(f"  [BLOCK] Earnings in {days_to_earnings} days — skipping")
+        print(f"  [BLOCK] Earnings in {days_to_earnings} days -- skipping")
         return
 
+    # 5. Confidence filter
     contracts = calc_contracts(sig["confidence"])
     if contracts == 0:
         print(f"  [SKIP] Confidence {sig['confidence']}% < min {cfg.min_confidence}%")
         return
 
+    # 6. Daily cap
     remaining = daily_remaining()
     if remaining <= 0:
         print(f"  [SKIP] Daily max contracts ({cfg.daily_max_contracts}) reached")
         return
     contracts = min(contracts, remaining)
 
+    # 7. Contract selection
     contract = select_contract(chain, sig["direction"])
     if not contract:
         print(f"  [SKIP] No suitable contract found")
@@ -1510,10 +1722,23 @@ def scan_ticker(ticker: str, dry_run: bool) -> None:
     print(f"  Contract: {contract['symbol']}  Mid: ${contract['limit_price']:.2f}  "
           f"Delta: {contract['delta']:.2f}  IV: {atm_iv_val:.1f}%  IV/HV: {iv_stat}")
     if days_to_earnings:
-        print(f"  Earnings in {days_to_earnings} days — IN_WINDOW, proceeding with caution")
+        print(f"  Earnings in {days_to_earnings} days -- IN_WINDOW, proceeding with caution")
 
+    # IVR entry gate -- expensive options require stronger signal agreement
+    if iv_stat == "EXPENSIVE" and sig["agreement"] < 3:
+        print(f"  [SKIP] IV expensive ({atm_iv_val:.1f}% vs HV {sig['hv30']:.1f}%) "
+              f"-- need >=3 strategies agreeing, got {sig['agreement']}")
+        return
+
+    # Market breadth -- macro backdrop must not be in a clear opposing trend
+    if not _market_breadth_agrees(sig["direction"], ticker):
+        print(f"  [SKIP] Market breadth opposing {sig['direction']} -- macro mismatch")
+        return
+
+    # 8. Log signal
     signal_id = log_signal(ticker, sig["direction"], sig, chain, earnings_date, days_to_earnings, contract)
 
+    # 9. Place order
     success, order_id = place_order(ticker, sig["direction"], contract, contracts, dry_run)
     status = "placed" if success else "failed"
     trade_id = log_trade(ticker, sig["direction"], contract, contracts, signal_id, status, order_id)
@@ -1530,6 +1755,7 @@ def scan_ticker(ticker: str, dry_run: bool) -> None:
             f"Fill price: ${contract['limit_price']:.2f}\nConfidence: {sig['confidence']}%\n"
             f"Contract: {contract['symbol']}",
         )
+        # Track open position for exit management
         open_position(
             ticker, sig["direction"], contract, contracts,
             chain.get("underlyingPrice", 0), signal_id, trade_id
@@ -1547,6 +1773,7 @@ def main() -> None:
     parser.add_argument("--ticker",    nargs="+",           help="Override WATCH_TICKERS for this run")
     args = parser.parse_args()
 
+    # Load .env if present
     try:
         from dotenv import load_dotenv
         load_dotenv()
@@ -1566,7 +1793,7 @@ def main() -> None:
         sys.exit(1)
 
     if args.dry_run:
-        print("** DRY-RUN MODE — signals generated, no orders placed **")
+        print("** DRY-RUN MODE -- signals generated, no orders placed **")
 
     def run_scan() -> None:
         for i, ticker in enumerate(tickers):
@@ -1574,29 +1801,30 @@ def main() -> None:
                 scan_ticker(ticker, dry_run=args.dry_run)
             except Exception as e:
                 print(f"  [ERROR] {ticker}: {e}")
+            # Tastytrade market data rate limit: 2 req/s -- stagger tickers
             if i < len(tickers) - 1:
                 time.sleep(0.6)
 
     if args.loop:
-        print(f"Starting loop — signal scan every {cfg.loop_interval_min}min, "
+        print(f"Starting loop -- signal scan every {cfg.loop_interval_min}min, "
               f"position check every {cfg.pos_check_min}min")
         print(f"Exit rules: stop={cfg.stop_loss_pct*100:.0f}%  "
-              f"trail starts at +{cfg.trail_start_pct*100:.0f}%  "
-              f"base trail={cfg.trail_stop_pct*100:.0f}%  "
-              f"signal_reversal={'ON' if cfg.signal_exit else 'OFF'}  "
-              f"indicator_exit={'ON' if cfg.indicator_exit else 'OFF'}")
+              f"target={cfg.take_profit_pct*100:.0f}%  "
+              f"trail={cfg.trail_stop_pct*100:.0f}%  "
+              f"signal_reversal={'ON' if cfg.signal_exit else 'OFF'}")
 
         last_signal_t   = datetime.min
         last_pos_t      = datetime.min
-        TICK            = 20
+        TICK            = 20  # seconds between loop ticks
 
         while True:
             now = datetime.now()
             if not is_market_open():
-                print(f"[{now.strftime('%H:%M:%S')}] Market closed — waiting...")
+                print(f"[{now.strftime('%H:%M:%S')}] Market closed -- waiting...")
                 time.sleep(60)
                 continue
 
+            # Position monitor runs first -- fastest exit possible
             if (now - last_pos_t).total_seconds() >= cfg.pos_check_min * 60:
                 try:
                     monitor_positions(dry_run=args.dry_run)
@@ -1604,12 +1832,14 @@ def main() -> None:
                     print(f"  [MONITOR ERROR] {e}")
                 last_pos_t = now
 
+            # Signal scan for new entries
             if (now - last_signal_t).total_seconds() >= cfg.loop_interval_min * 60:
                 run_scan()
                 last_signal_t = now
 
             time.sleep(TICK)
     else:
+        # Single run -- check positions first, then scan for new signals
         monitor_positions(dry_run=args.dry_run)
         run_scan()
 
