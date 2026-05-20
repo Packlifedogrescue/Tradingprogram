@@ -102,7 +102,7 @@ class Config:
                         else "https://api.cert.tastytrade.com")
     rh_user          = os.environ.get("ROBINHOOD_USERNAME", "")
     rh_pass          = os.environ.get("ROBINHOOD_PASSWORD", "")
-    max_contract_price = _ef("TRADE_MAX_CONTRACT_PRICE", 4.50)
+    max_contract_price = _ef("TRADE_MAX_CONTRACT_PRICE", 3.50)
     resend_key       = os.environ.get("RESEND_API_KEY", "")
     notify_email     = os.environ.get("NOTIFY_EMAIL", "")
     notify_phone     = os.environ.get("NOTIFY_PHONE", "")
@@ -437,7 +437,6 @@ async def fetch_chain_async(session: aiohttp.ClientSession,
     if not token:
         return {}
 
-    # Fetch nested chain (expirations + strikes in one call) and underlying quote concurrently
     chain_url = f"{cfg.tastytrade_base}/option-chains/{ticker}/nested"
     quote_url = f"{cfg.tastytrade_base}/market-data/quotes"
     headers   = {"Authorization": token,
@@ -461,7 +460,6 @@ async def fetch_chain_async(session: aiohttp.ClientSession,
     if isinstance(chain_raw, Exception) or isinstance(quote_raw, Exception):
         return {}
 
-    # Parse underlying price
     underlying = 0.0
     try:
         items = quote_raw.get("data", {}).get("items", [])
@@ -471,7 +469,6 @@ async def fetch_chain_async(session: aiohttp.ClientSession,
     except Exception:
         pass
 
-    # Pick expiration
     today = date.today()
     chosen_exp, chosen_items = None, []
     try:
@@ -493,7 +490,6 @@ async def fetch_chain_async(session: aiohttp.ClientSession,
     if not chosen_exp:
         return {}
 
-    # Flatten strikes into option list
     options = []
     for strike_row in chosen_items:
         strike_price = float(strike_row.get("strike-price", 0) or 0)
@@ -773,8 +769,6 @@ def select_contract(chain: dict, direction: str) -> Optional[dict]:
 
     max_price = cfg.max_contract_price
 
-    # For 0DTE: prefer ATM (delta closer to 0.50 for max leverage)
-    # For longer DTE: prefer slightly OTM (delta ~0.40)
     target_delta = 0.50 if cfg.zero_dte else 0.40
 
     def score(o):
@@ -991,7 +985,6 @@ async def monitor_positions(session: aiohttp.ClientSession, dry_run: bool = Fals
         if cur_price <= 0:
             continue
 
-        # Update peak
         if cur_price > pos["peak_price"]:
             _positions[ticker]["peak_price"] = cur_price
         peak = _positions[ticker]["peak_price"]
@@ -1000,7 +993,6 @@ async def monitor_positions(session: aiohttp.ClientSession, dry_run: bool = Fals
         pnl_pct = (cur_price - entry) / entry
         is_0dte = _is_today_expiry(pos.get("expiry_date", ""))
 
-        # Force-close check
         et = _now_et()
         force_t = cfg.force_close_time
         ft_h, ft_m = int(force_t.split(":")[0]), int(force_t.split(":")[1])
@@ -1009,13 +1001,11 @@ async def monitor_positions(session: aiohttp.ClientSession, dry_run: bool = Fals
             close_position(ticker, cur_price, reason="force_close", dry_run=dry_run)
             continue
 
-        # Stop loss
         if pnl_pct <= -cfg.stop_loss_pct:
             print(f"  [STOP] {ticker} {pnl_pct*100:.1f}% -- stop loss hit")
             close_position(ticker, cur_price, reason="stop_loss", dry_run=dry_run)
             continue
 
-        # Tiered trailing stop
         trail_start = 0.15 if is_0dte else cfg.trail_start_pct
         if pnl_pct >= trail_start:
             peak_gain = (peak - entry) / entry
@@ -1034,10 +1024,9 @@ async def monitor_positions(session: aiohttp.ClientSession, dry_run: bool = Fals
                 close_position(ticker, cur_price, reason="trail_stop", dry_run=dry_run)
                 continue
 
-        # Indicator exit
         try:
             ohlcv = await fetch_ohlcv(session, ticker, cfg.data_interval, outputsize=60)
-            if ohlcv and indicator_exit     and pnl_pct > 0:
+            if ohlcv and indicator_exit and pnl_pct > 0:
                 cl   = ohlcv["closes"]
                 hi   = ohlcv["highs"]
                 lo   = ohlcv["lows"]
@@ -1048,7 +1037,6 @@ async def monitor_positions(session: aiohttp.ClientSession, dry_run: bool = Fals
                     close_position(ticker, cur_price, reason="indicator", dry_run=dry_run)
                     continue
 
-            # Signal reversal exit
             if ohlcv and cfg.signal_exit and pnl_pct > 0:
                 cl2 = ohlcv["closes"]
                 hi2 = ohlcv["highs"]
@@ -1089,26 +1077,21 @@ async def scan_ticker(
 
     _daily_reset()
 
-    # 1. Circuit breaker
     tripped, reason = circuit_breaker_tripped()
     if tripped:
         print(f"  [{ticker}] SKIP -- {reason}")
         return
 
-    # Already in a position for this ticker
     if ticker in _positions:
         return
 
-    # Already traded this ticker today
     if ticker in _cycle_traded:
         return
 
-    # Daily contract limit
     if _daily_used >= cfg.daily_max_contracts:
         print(f"  [{ticker}] SKIP -- daily limit reached ({_daily_used}/{cfg.daily_max_contracts})")
         return
 
-    # Fetch OHLCV and VIX concurrently
     ohlcv, vix = await asyncio.gather(
         fetch_ohlcv(session, ticker, cfg.data_interval, outputsize=100),
         fetch_vix(session),
@@ -1125,19 +1108,16 @@ async def scan_ticker(
     price   = float(closes[-1])
     _record_price(ticker, price)
 
-    # 2. VIX level
     _record_vix(vix)
     if vix > 0 and vix > cfg.max_vix:
         print(f"  [{ticker}] SKIP -- VIX {vix:.1f} > max {cfg.max_vix}")
         return
 
-    # 3. VIX rate-of-change spike
     spiked, spike_reason = _vix_spiked()
     if spiked:
         print(f"  [{ticker}] SKIP -- {spike_reason}")
         return
 
-    # 4. News/ATR spike
     spike, spike_msg = is_news_spike(highs, lows, closes)
     if spike:
         print(f"  [{ticker}] SKIP -- {spike_msg}")
@@ -1145,24 +1125,20 @@ async def scan_ticker(
 
     vwap_val = session_vwap(ohlcv)
 
-    # 5. Market regime
     regime = market_regime(ohlcv, vwap_val, highs, lows, closes)
     if regime == "CHOP":
         print(f"  [{ticker}] SKIP -- CHOP regime, waiting for trend")
         return
 
-    # 6. Time gate
     if not is_trading_window():
         print(f"  [{ticker}] SKIP -- outside trading window")
         return
 
-    # 7. High-impact event blackout
     near, label = is_near_high_impact_event()
     if near:
         print(f"  [{ticker}] SKIP -- near high-impact event: {label}")
         return
 
-    # Signal aggregation (before chain fetch to fail fast)
     chain = await fetch_chain_async(session, ticker, cfg.min_dte, cfg.max_dte)
     if not chain:
         print(f"  [{ticker}] SKIP -- no chain data")
@@ -1177,7 +1153,6 @@ async def scan_ticker(
     if sig["direction"] is None:
         return
 
-    # 8. Time decay gate (after 2 PM: tighter thresholds)
     et = _now_et()
     late_session = et.hour >= 14
     min_agree_req = 4 if late_session else 3
@@ -1188,7 +1163,6 @@ async def scan_ticker(
               f"(need {min_agree_req}{'+ after 2PM' if late_session else ''})")
         return
 
-    # 9. Max pain proximity
     pain_k = max_pain_level(chain)
     if pain_k > 0:
         dist_pct = abs(price - pain_k) / price
@@ -1196,40 +1170,33 @@ async def scan_ticker(
             print(f"  [{ticker}] SKIP -- price within 0.2% of max pain ${pain_k:.0f}")
             return
 
-    # 10. Earnings blackout
     days_to_earn = await days_to_earnings_async(session, ticker)
     if days_to_earn is not None and days_to_earn <= 1 and not cfg.zero_dte:
         print(f"  [{ticker}] SKIP -- earnings in {days_to_earn}d")
         return
 
-    # 11. Correlation guard
     open_tickers = list(_positions.keys())
     if not correlation_ok(ticker, open_tickers):
         print(f"  [{ticker}] SKIP -- highly correlated with open position")
         return
 
-    # 12. Confidence filter
     if sig["confidence"] < min_conf_req:
         print(f"  [{ticker}] SKIP -- confidence {sig['confidence']}% < min {cfg.min_confidence}%")
         return
 
-    # 13. Fetch / validate chain
     if not chain.get("options"):
         print(f"  [{ticker}] SKIP -- empty chain")
         return
 
-    # 14. Select contract
     contract = select_contract(chain, sig["direction"])
     if not contract:
         print(f"  [{ticker}] SKIP -- no suitable contract found")
         return
 
-    # 15. Spread check
     if not spread_ok(contract):
         print(f"  [{ticker}] SKIP -- bid-ask spread too wide")
         return
 
-    # 16. IV rank gate
     iv_mod = iv_rank_modifier(chain)
     if iv_mod < 0.8:
         print(f"  [{ticker}] SKIP -- IV rank too low (mod={iv_mod:.2f})")
@@ -1282,7 +1249,6 @@ async def async_main(tickers: list[str], dry_run: bool, loop: bool) -> None:
             if _positions:
                 await monitor_positions(session, dry_run=dry_run)
 
-            # Scan all tickers concurrently
             await asyncio.gather(*[
                 scan_ticker(session, t, dry_run=dry_run) for t in tickers
             ])
@@ -1290,7 +1256,6 @@ async def async_main(tickers: list[str], dry_run: bool, loop: bool) -> None:
             if not loop:
                 break
 
-            # Sleep scan interval (shorter if in a position)
             sleep_sec = cfg.pos_check_sec if _positions else cfg.scan_sec
             print(f"  Sleeping {sleep_sec}s ...")
             await asyncio.sleep(sleep_sec)
