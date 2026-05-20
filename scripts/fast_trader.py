@@ -73,6 +73,7 @@ macd_entry_signal         = _at.macd_entry_signal
 indicator_exit_check      = _at.indicator_exit_check
 is_trading_window         = _at.is_trading_window
 is_near_high_impact_event = _at.is_near_high_impact_event
+is_news_spike             = _at.is_news_spike
 
 
 # ---------------------------------------------------------------------------
@@ -272,6 +273,34 @@ CORRELATED_GROUPS: list[frozenset] = [
 
 # Populated during each scan cycle; cleared at the start of the next one.
 _cycle_traded: dict[str, tuple[str, int]] = {}  # ticker -> (direction, confidence)
+
+# ---------------------------------------------------------------------------
+# VIX rate-of-change tracker -- detects systemic shocks in real time
+# ---------------------------------------------------------------------------
+
+_vix_history: list[tuple[float, float]] = []  # (monotonic_time, vix_value)
+
+
+def _record_vix(vix_val: float) -> None:
+    now = time.monotonic()
+    _vix_history.append((now, vix_val))
+    while len(_vix_history) > 15:  # keep ~75 min at 5-min intervals
+        _vix_history.pop(0)
+
+
+def _vix_spiked(spike_threshold: float = 2.5, window_sec: float = 600) -> tuple[bool, str]:
+    """Returns (True, reason) if VIX jumped >= spike_threshold in the last window_sec seconds."""
+    if len(_vix_history) < 2:
+        return False, ""
+    now = time.monotonic()
+    recent = [(t, v) for t, v in _vix_history if t >= now - window_sec]
+    if len(recent) < 2:
+        return False, ""
+    jump = recent[-1][1] - recent[0][1]
+    if jump >= spike_threshold:
+        elapsed = int((now - recent[0][0]) / 60)
+        return True, f"VIX spiked +{jump:.1f} in {elapsed}min (now {recent[-1][1]:.1f})"
+    return False, ""
 
 
 def correlated_blocker(ticker: str, direction: str, confidence: int) -> Optional[str]:
@@ -880,7 +909,7 @@ async def check_position(session: aiohttp.ClientSession,
         await close_position(session, pos, "stop_loss", dry_run)
         return
 
-    # -- Tiered trailing stop -- rides the move, never caps it ----------------
+    # -- Tiered trailing stop -- rides the move, never caps it
     # 0DTE positions use tighter tiers: activates sooner (+15%) and trails closer
     # because 0DTE options can reverse in minutes on any intraday news.
     is_0dte = pos.get("dte", 99) <= 1
@@ -907,7 +936,7 @@ async def check_position(session: aiohttp.ClientSession,
         await close_position(session, pos, "take_profit", dry_run)
         return
 
-    # -- Chart-based exits (indicator checks + signal reversal) ---------------
+    # -- Chart-based exits (indicator checks + signal reversal)
     if cfg.indicator_exit or cfg.signal_exit:
         ohlcv = await fetch_ohlcv(session, pos["ticker"])
         if ohlcv:
@@ -971,9 +1000,25 @@ async def scan_ticker(session: aiohttp.ClientSession,
     if not sig["direction"]:
         return
 
-    # VIX filter
+    # VIX level filter
     if vix > 0 and vix > cfg.max_vix:
         print(f"  [{ticker}] SKIP -- VIX {vix:.1f} > max {cfg.max_vix}")
+        return
+
+    # VIX rate-of-change -- systemic shock (flash crash, surprise Fed action, geopolitical)
+    vix_spike, vix_spike_reason = _vix_spiked()
+    if vix_spike:
+        print(f"  [{ticker}] SKIP -- {vix_spike_reason}")
+        return
+
+    # Candle-range spike filter -- surprise news visible in outsized bar size
+    spike, spike_reason = is_news_spike(
+        np.array(ohlcv["highs"],  dtype=float),
+        np.array(ohlcv["lows"],   dtype=float),
+        np.array(ohlcv["closes"], dtype=float),
+    )
+    if spike:
+        print(f"  [{ticker}] SKIP -- news spike -- {spike_reason}")
         return
 
     # Time-of-day gate -- entries only 10:00 AM - 3:30 PM ET
@@ -1098,6 +1143,7 @@ async def async_main(tickers: list[str], dry_run: bool) -> None:
         # Initial VIX fetch
         vix = await fetch_vix(session)
         if vix > 0:
+            _record_vix(vix)
             print(f"VIX: {vix:.1f}  (max allowed: {cfg.max_vix})")
 
         last_scan_t  = 0.0
@@ -1122,6 +1168,8 @@ async def async_main(tickers: list[str], dry_run: bool) -> None:
             # VIX refresh
             if now - last_vix_t >= VIX_REFRESH:
                 vix = await fetch_vix(session)
+                if vix > 0:
+                    _record_vix(vix)
                 print(f"  [VIX] {vix:.1f}")
                 last_vix_t = now
 
