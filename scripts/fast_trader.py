@@ -16,7 +16,7 @@ Entry filters (in order):
   bid-ask spread, IV rank, earnings, correlation guard, confidence, sizing
 
 Exit rules:
-  stop loss (25%), tiered trailing stop (0DTE: 15%/10%/7%),
+  stop loss (22%), tiered trailing stop (0DTE: 15%/10%/7%),
   force-close 3:30PM, MACD cross, RSI exhaustion, Bollinger touch,
   signal reversal, safety-net take-profit (500%)
 
@@ -122,7 +122,7 @@ class Config:
     daily_max_contracts = _ei("TRADE_DAILY_MAX_CONTRACTS", 1)
 
     # Exit rules
-    stop_loss_pct      = _ef("TRADE_STOP_LOSS_PCT",    0.25)
+    stop_loss_pct      = _ef("TRADE_STOP_LOSS_PCT",    0.22)
     take_profit_pct    = _ef("TRADE_TAKE_PROFIT_PCT",  5.00)
     trail_stop_pct     = _ef("TRADE_TRAIL_STOP_PCT",   0.15)
     trail_start_pct    = _ef("TRADE_TRAIL_START_PCT",  0.15)
