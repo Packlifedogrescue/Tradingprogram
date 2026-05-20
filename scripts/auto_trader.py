@@ -597,7 +597,7 @@ def indicator_exit_check(
         if direction == "PUT" and hist[-1] > 0 > hist[-2] and pnl_pct >= min_profit_pct:
             return "macd_bullish_cross"
 
-    # Bollinger band extension -- price stretched beyond 2sigma band, likely to revert
+    # Bollinger band extension -- price stretched beyond 2-sigma band, likely to revert
     lo, _mid, hi = bollinger(closes)
     if hi is not None and lo is not None:
         cur = float(closes[-1])
@@ -1441,12 +1441,12 @@ def check_position(pos: dict, dry_run: bool) -> bool:
     print(f"  [{ticker} {direction}] entry ${entry:.2f}  now ${mid:.2f}  "
           f"P&L {pnl_pct*100:+.1f}%  peak {peak_pct*100:+.1f}%")
 
-    # -- Stop loss --------------------------------------------------------------
+    # -- Stop loss
     if pnl_pct <= -cfg.stop_loss_pct:
         close_position(pos, max(bid, 0.01), "stop_loss", dry_run)
         return True
 
-    # -- Tiered trailing stop -- rides the move, never caps it -----------------
+    # -- Tiered trailing stop -- rides the move, never caps it
     # Kicks in after trail_start_pct gain, tightens as position grows larger.
     # SPX example: $1.90 entry -> $1000 peak -> exits near $900, not at $3.80.
     if peak_pct >= cfg.trail_start_pct:
@@ -1467,7 +1467,7 @@ def check_position(pos: dict, dry_run: bool) -> bool:
         close_position(pos, bid, "take_profit", dry_run)
         return True
 
-    # -- Chart-based exits (indicator checks + signal reversal) ----------------
+    # -- Chart-based exits (indicator checks + signal reversal)
     # Both reuse the same OHLCV fetch to save API calls.
     if cfg.indicator_exit or cfg.signal_exit:
         ohlcv = fetch_ohlcv(ticker)
@@ -1569,7 +1569,7 @@ def is_trading_window() -> tuple[bool, str]:
 # CPI/NFP: released pre-market at 8:30 AM -- block 9:30 AM -> 10:30 AM (first hour of trading).
 _HIGH_IMPACT_EVENTS: list[tuple[str, str, int, int]] = [
     # (date, name, hour_ET, minute_ET)
-    # -- FOMC decision dates -------------------------------------------------
+    # -- FOMC decision dates
     ("2025-01-29", "FOMC", 14, 0), ("2025-03-19", "FOMC", 14, 0),
     ("2025-05-07", "FOMC", 14, 0), ("2025-06-18", "FOMC", 14, 0),
     ("2025-07-30", "FOMC", 14, 0), ("2025-09-17", "FOMC", 14, 0),
@@ -1578,7 +1578,7 @@ _HIGH_IMPACT_EVENTS: list[tuple[str, str, int, int]] = [
     ("2026-05-06", "FOMC", 14, 0), ("2026-06-17", "FOMC", 14, 0),
     ("2026-07-29", "FOMC", 14, 0), ("2026-09-16", "FOMC", 14, 0),
     ("2026-10-28", "FOMC", 14, 0), ("2026-12-09", "FOMC", 14, 0),
-    # -- CPI release dates ---------------------------------------------------
+    # -- CPI release dates
     ("2025-01-15", "CPI",  8, 30), ("2025-02-12", "CPI",  8, 30),
     ("2025-03-12", "CPI",  8, 30), ("2025-04-10", "CPI",  8, 30),
     ("2025-05-13", "CPI",  8, 30), ("2025-06-11", "CPI",  8, 30),
@@ -1591,7 +1591,7 @@ _HIGH_IMPACT_EVENTS: list[tuple[str, str, int, int]] = [
     ("2026-07-15", "CPI",  8, 30), ("2026-08-12", "CPI",  8, 30),
     ("2026-09-09", "CPI",  8, 30), ("2026-10-14", "CPI",  8, 30),
     ("2026-11-12", "CPI",  8, 30), ("2026-12-09", "CPI",  8, 30),
-    # -- NFP / Jobs report ---------------------------------------------------
+    # -- NFP / Jobs report
     ("2025-01-10", "NFP",  8, 30), ("2025-02-07", "NFP",  8, 30),
     ("2025-03-07", "NFP",  8, 30), ("2025-04-04", "NFP",  8, 30),
     ("2025-05-02", "NFP",  8, 30), ("2025-06-06", "NFP",  8, 30),
@@ -1627,6 +1627,36 @@ def is_near_high_impact_event() -> tuple[bool, str]:
             blk_end   = et.replace(hour=10, minute=30, second=0, microsecond=0)
         if blk_start <= et <= blk_end:
             return True, ev_name
+    return False, ""
+
+
+def is_news_spike(
+    highs: np.ndarray, lows: np.ndarray, closes: np.ndarray,
+    multiplier: float = 2.5, lookback: int = 20,
+) -> tuple[bool, str]:
+    """
+    Detects surprise intraday news spikes by comparing the current bar's range
+    to recent ATR.  Fires for any unscheduled event: Fed speak, geopolitical
+    headlines, flash crashes, surprise data revisions, circuit breakers, etc.
+    Returns (True, reason) -- caller should skip entry and wait for next scan.
+    """
+    if len(closes) < lookback + 2:
+        return False, ""
+    recent_atr = atr(
+        highs[-(lookback + 1):-1], lows[-(lookback + 1):-1],
+        closes[-(lookback + 1):-1], lookback,
+    )
+    if recent_atr <= 0:
+        return False, ""
+    cur_range = float(highs[-1]) - float(lows[-1])
+    ratio = cur_range / recent_atr
+    if ratio >= multiplier:
+        return True, f"bar range {cur_range:.2f} is {ratio:.1f}x ATR -- possible news spike"
+    # Two consecutive outsized bars = market still digesting news
+    if len(closes) >= lookback + 3:
+        prev_range = float(highs[-2]) - float(lows[-2])
+        if cur_range >= recent_atr * 1.8 and prev_range >= recent_atr * 1.8:
+            return True, f"2 consecutive outsized bars ({ratio:.1f}x ATR) -- news digestion"
     return False, ""
 
 
@@ -1672,6 +1702,16 @@ def scan_ticker(ticker: str, dry_run: bool) -> None:
     ohlcv = fetch_ohlcv(ticker)
     if not ohlcv:
         print(f"  [SKIP] No price data")
+        return
+
+    # News spike guard -- skip entry if current bar is abnormally large
+    spike, spike_reason = is_news_spike(
+        np.array(ohlcv["highs"],  dtype=float),
+        np.array(ohlcv["lows"],   dtype=float),
+        np.array(ohlcv["closes"], dtype=float),
+    )
+    if spike:
+        print(f"  [SKIP] News spike -- {spike_reason}")
         return
 
     # 2. Fetch chain early -- options flow and IV rank vote in the signal engine
