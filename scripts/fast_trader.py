@@ -68,8 +68,11 @@ options_flow_signal  = _at.options_flow_signal
 iv_rank_modifier     = _at.iv_rank_modifier
 atm_iv_from_chain    = _at.atm_iv_from_chain
 iv_status            = _at.iv_status
-macd_histogram       = _at.macd_histogram
-indicator_exit_check = _at.indicator_exit_check
+macd_histogram            = _at.macd_histogram
+macd_entry_signal         = _at.macd_entry_signal
+indicator_exit_check      = _at.indicator_exit_check
+is_trading_window         = _at.is_trading_window
+is_near_high_impact_event = _at.is_near_high_impact_event
 
 
 # ---------------------------------------------------------------------------
@@ -260,22 +263,29 @@ _chain_cache: dict[str, tuple[dict, float]] = {}
 # Correlation guard -- prevents doubling up on the same macro move
 # ---------------------------------------------------------------------------
 
+# Tickers in the same group move together (0.95+ correlation).
+# Only the highest-confidence signal per group fires per scan cycle.
 CORRELATED_GROUPS: list[frozenset] = [
-    frozenset({"SPX", "SPY", "SPXW"}),
-    frozenset({"QQQ", "NDX", "QQQM"}),
+    frozenset({"SPX", "SPY", "SPXW"}),   # S&P 500 -- essentially the same trade
+    frozenset({"QQQ", "NDX", "QQQM"}),   # Nasdaq 100
 ]
 
-_cycle_traded: dict[str, tuple[str, int]] = {}
+# Populated during each scan cycle; cleared at the start of the next one.
+_cycle_traded: dict[str, tuple[str, int]] = {}  # ticker -> (direction, confidence)
 
 
 def correlated_blocker(ticker: str, direction: str, confidence: int) -> Optional[str]:
+    """
+    Returns the name of a correlated ticker that already fired in the same
+    direction this cycle with higher or equal confidence, or None if clear.
+    """
     for group in CORRELATED_GROUPS:
         if ticker not in group:
             continue
         for other, (other_dir, other_conf) in _cycle_traded.items():
             if other in group and other != ticker and other_dir == direction:
                 if other_conf >= confidence:
-                    return other
+                    return other  # block this ticker -- the better signal already traded
     return None
 
 
@@ -339,6 +349,7 @@ async def fetch_chain(session: aiohttp.ClientSession, ticker: str) -> Optional[d
                                timeout=aiohttp.ClientTimeout(total=10)) as r:
             return await r.json()
 
+    # Fetch nested chain (expirations + strikes in one call) and underlying quote concurrently
     try:
         chain_data, quote_data = await asyncio.gather(
             _get(f"{base}/option-chains/{ticker}/nested"),
@@ -514,7 +525,7 @@ def intraday_pivot_signal(ohlcv: dict, closes: np.ndarray, rsi_val: float) -> tu
     return None, 0
 
 
-FAST_STRATEGIES = 9  # trend, MR, breakout, flag, FVG, vwap, candle, pivot, flow
+FAST_STRATEGIES = 10  # trend, MR, breakout, flag, FVG, vwap, candle, pivot, flow, macd
 
 
 def run_fast_signal_engine(ohlcv: dict, chain: Optional[dict] = None) -> dict:
@@ -538,6 +549,7 @@ def run_fast_signal_engine(ohlcv: dict, chain: Optional[dict] = None) -> dict:
         ("candle",     lambda: candlestick_signal(opens, closes, highs, lows, rsi_val)),
         ("pivot",      lambda: intraday_pivot_signal(ohlcv, closes, rsi_val)),
         ("flow",       lambda: options_flow_signal(chain)),
+        ("macd",       lambda: macd_entry_signal(closes)),
     ]:
         try:
             d, c = fn()
@@ -586,6 +598,11 @@ def calc_contracts(confidence: int) -> int:
 
 
 def ticker_max_contracts(ticker: str) -> int:
+    """
+    Per-ticker contract ceiling read from env.
+    Set SPX_MAX_CONTRACTS=1, QQQ_MAX_CONTRACTS=2, SPY_MAX_CONTRACTS=3 etc.
+    Falls back to the global tier-3 max if not set.
+    """
     key = f"{ticker.replace('^', '').replace('/', '_')}_MAX_CONTRACTS"
     try:
         return max(1, int(os.environ[key]))
@@ -594,7 +611,7 @@ def ticker_max_contracts(ticker: str) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Supabase helpers
+# Supabase helpers (reuse auto_trader's but with fast_trader's cfg)
 # ---------------------------------------------------------------------------
 
 def _sb_insert(table: str, row: dict) -> Optional[str]:
@@ -657,6 +674,8 @@ def select_contract(chain: dict, direction: str) -> Optional[dict]:
 
     max_price = cfg.max_contract_price
 
+    # For 0DTE: prefer ATM (delta closer to 0.50 for max leverage)
+    # For longer DTE: prefer slightly OTM (delta ~0.40)
     target_delta = 0.50 if cfg.zero_dte else 0.40
 
     def score(o):
@@ -861,17 +880,25 @@ async def check_position(session: aiohttp.ClientSession,
         await close_position(session, pos, "stop_loss", dry_run)
         return
 
-    # Tiered trailing stop -- rides the move, never caps it
-    if peak_pct >= cfg.trail_start_pct:
-        if peak_pct >= 3.00:    # +300%+ -> very tight trail (10%)
-            trail = 0.10
-        elif peak_pct >= 1.00:  # +100%+ -> tighter trail (15%)
-            trail = 0.15
-        else:                   # +30-100% -> base trail from config
-            trail = cfg.trail_stop_pct
+    # -- Tiered trailing stop -- rides the move, never caps it ----------------
+    # 0DTE positions use tighter tiers: activates sooner (+15%) and trails closer
+    # because 0DTE options can reverse in minutes on any intraday news.
+    is_0dte = pos.get("dte", 99) <= 1
+    trail_start = 0.15 if is_0dte else cfg.trail_start_pct
+    if peak_pct >= trail_start:
+        if is_0dte:
+            if peak_pct >= 2.00:    trail = 0.07   # +200%+ -> 7% trail
+            elif peak_pct >= 0.50:  trail = 0.10   # +50%+  -> 10% trail
+            else:                   trail = 0.15   # +15%+  -> 15% trail
+        else:
+            if peak_pct >= 3.00:    trail = 0.10   # +300%+ -> 10% trail
+            elif peak_pct >= 1.00:  trail = 0.15   # +100%+ -> 15% trail
+            else:                   trail = cfg.trail_stop_pct
         pullback = (new_peak - mid) / max(new_peak, 0.01)
         if pullback >= trail:
-            print(f"  [TRAIL] Peak {peak_pct*100:+.0f}%  pullback {pullback*100:.1f}%  trail {trail*100:.0f}%")
+            label = "0DTE" if is_0dte else ""
+            print(f"  [TRAIL{' '+label if label else ''}] Peak {peak_pct*100:+.0f}%  "
+                  f"pullback {pullback*100:.1f}%  trail {trail*100:.0f}%")
             await close_position(session, pos, "trail_stop", dry_run)
             return
 
@@ -880,7 +907,7 @@ async def check_position(session: aiohttp.ClientSession,
         await close_position(session, pos, "take_profit", dry_run)
         return
 
-    # Chart-based exits (indicator checks + signal reversal)
+    # -- Chart-based exits (indicator checks + signal reversal) ---------------
     if cfg.indicator_exit or cfg.signal_exit:
         ohlcv = await fetch_ohlcv(session, pos["ticker"])
         if ohlcv:
@@ -923,6 +950,7 @@ async def monitor_positions(session: aiohttp.ClientSession, dry_run: bool) -> No
 
 async def scan_ticker(session: aiohttp.ClientSession,
                       ticker: str, dry_run: bool, vix: float) -> None:
+    # Fetch OHLCV and chain concurrently
     ohlcv, chain, (earnings_date, days_to_earnings) = await asyncio.gather(
         fetch_ohlcv(session, ticker),
         fetch_chain(session, ticker),
@@ -943,25 +971,42 @@ async def scan_ticker(session: aiohttp.ClientSession,
     if not sig["direction"]:
         return
 
+    # VIX filter
     if vix > 0 and vix > cfg.max_vix:
         print(f"  [{ticker}] SKIP -- VIX {vix:.1f} > max {cfg.max_vix}")
         return
 
+    # Time-of-day gate -- entries only 10:00 AM - 3:30 PM ET
+    in_window, window_reason = is_trading_window()
+    if not in_window:
+        print(f"  [{ticker}] SKIP -- {window_reason}")
+        return
+
+    # High-impact event blackout -- no entries near FOMC / CPI / NFP
+    near_event, event_name = is_near_high_impact_event()
+    if near_event:
+        print(f"  [{ticker}] SKIP -- {event_name} blackout")
+        return
+
+    # Earnings block
     if days_to_earnings is not None and days_to_earnings <= 1 and not cfg.zero_dte:
         print(f"  [{ticker}] BLOCK -- earnings in {days_to_earnings}d")
         return
 
+    # Correlation guard -- block if a correlated ticker already traded this direction
     blocker = correlated_blocker(ticker, sig["direction"], sig["confidence"])
     if blocker:
         print(f"  [{ticker}] SKIP -- correlated with {blocker} "
               f"(already in {sig['direction']} this cycle)")
         return
 
+    # Confidence filter + sizing
     contracts = calc_contracts(sig["confidence"])
     if contracts == 0:
         print(f"  [{ticker}] SKIP -- confidence {sig['confidence']}% < min {cfg.min_confidence}%")
         return
 
+    # Per-ticker contract ceiling (e.g. SPX_MAX_CONTRACTS=1)
     contracts = min(contracts, ticker_max_contracts(ticker))
 
     global _daily_used
@@ -986,6 +1031,12 @@ async def scan_ticker(session: aiohttp.ClientSession,
           f"D{contract['delta']:.2f}  IV {atm_iv_val:.1f}%  {iv_stat}  "
           f"DTE {chain.get('dte', '?')}")
 
+    # IVR entry gate -- expensive options require stronger signal agreement
+    if iv_stat == "EXPENSIVE" and sig["agreement"] < 3:
+        print(f"  [{ticker}] SKIP -- IV expensive, need >=3 strategies, got {sig['agreement']}")
+        return
+
+    # Log signal
     signal_id = _sb_insert("signal_log", {
         "ticker": ticker, "direction": sig["direction"],
         "confidence": sig["confidence"], "strategy_agreement": sig["agreement"],
@@ -1000,6 +1051,7 @@ async def scan_ticker(session: aiohttp.ClientSession,
         "price_at_signal": chain.get("underlyingPrice"),
     })
 
+    # Place order
     success, order_id = _place_order(ticker, sig["direction"], contract, contracts, dry_run)
     status = "placed" if success else "failed"
     trade_id = _sb_insert("trades_log", {
@@ -1039,9 +1091,11 @@ async def scan_ticker(session: aiohttp.ClientSession,
 
 async def async_main(tickers: list[str], dry_run: bool) -> None:
     async with aiohttp.ClientSession() as session:
+        # Warm up: login to Robinhood once
         if not dry_run:
             await asyncio.get_event_loop().run_in_executor(None, rh_login)
 
+        # Initial VIX fetch
         vix = await fetch_vix(session)
         if vix > 0:
             print(f"VIX: {vix:.1f}  (max allowed: {cfg.max_vix})")
@@ -1049,7 +1103,7 @@ async def async_main(tickers: list[str], dry_run: bool) -> None:
         last_scan_t  = 0.0
         last_pos_t   = 0.0
         last_vix_t   = time.monotonic()
-        VIX_REFRESH  = 300
+        VIX_REFRESH  = 300  # refresh VIX every 5 min
 
         while True:
             now = time.monotonic()
@@ -1060,25 +1114,29 @@ async def async_main(tickers: list[str], dry_run: bool) -> None:
                 await asyncio.sleep(60)
                 continue
 
+            # Position monitor (highest priority -- fastest exit)
             if now - last_pos_t >= cfg.pos_check_sec:
                 await monitor_positions(session, dry_run)
                 last_pos_t = now
 
+            # VIX refresh
             if now - last_vix_t >= VIX_REFRESH:
                 vix = await fetch_vix(session)
                 print(f"  [VIX] {vix:.1f}")
                 last_vix_t = now
 
+            # Signal scan -- all tickers concurrently
             if now - last_scan_t >= cfg.scan_sec:
                 _cycle_traded.clear()
                 et = _now_et()
                 print(f"\n[{et.strftime('%H:%M:%S')} ET] Scanning {tickers}...")
+                # Stagger tickers 0.6s apart -- Tastytrade market data rate limit is 2 req/s
                 for t in tickers:
                     await scan_ticker(session, t, dry_run, vix)
                     await asyncio.sleep(0.6)
                 last_scan_t = now
 
-            await asyncio.sleep(5)
+            await asyncio.sleep(5)  # tight tick -- checks every 5s whether it's time to act
 
 
 def main() -> None:
@@ -1109,8 +1167,8 @@ def main() -> None:
     print(f"OptionEdge Fast Trader -- {cfg.data_interval} bars -- {mode} -- "
           f"scan {cfg.scan_sec}s / pos {cfg.pos_check_sec}s")
     print(f"Exits: stop {cfg.stop_loss_pct*100:.0f}%  "
-          f"trail starts +{cfg.trail_start_pct*100:.0f}%  "
-          f"base trail {cfg.trail_stop_pct*100:.0f}%  "
+          f"target {cfg.take_profit_pct*100:.0f}%  "
+          f"trail {cfg.trail_stop_pct*100:.0f}%  "
           f"force-close {cfg.force_close_time} ET")
     if args.dry_run:
         print("** DRY-RUN -- no orders placed **")
